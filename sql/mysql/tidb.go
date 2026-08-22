@@ -25,7 +25,58 @@ type (
 	tdiff struct{ diff }
 	// tinspect decorates MySQL inspect.
 	tinspect struct{ inspect }
+
+	// AutoRandom describes the TiDB AUTO_RANDOM column attribute.
+	// Bits is the shard-bit count. TiDB normalizes bare AUTO_RANDOM to 5.
+	AutoRandom struct {
+		schema.Attr
+		Bits int
+	}
 )
+
+const defaultAutoRandomBits = 5
+
+func (d *tdiff) ColumnChange(fromT *schema.Table, from, to *schema.Column, opts *schema.DiffOptions) (schema.Change, error) {
+	change, err := d.diff.ColumnChange(fromT, from, to, opts)
+	if err != nil {
+		return nil, err
+	}
+	if !autoRandomChanged(from, to) && !hasAutoRandom(from) && !hasAutoRandom(to) {
+		return change, nil
+	}
+	if change != sqlx.NoChange || autoRandomChanged(from, to) {
+		return nil, fmt.Errorf("TiDB does not support altering AUTO_RANDOM on column %q; recreate the column or table", to.Name)
+	}
+	return change, nil
+}
+
+func hasAutoRandom(c *schema.Column) bool {
+	_, ok := autoRandomAttr(c.Attrs)
+	return ok
+}
+
+func autoRandomChanged(from, to *schema.Column) bool {
+	fromAttr, fromOK := autoRandomAttr(from.Attrs)
+	toAttr, toOK := autoRandomAttr(to.Attrs)
+	return fromOK != toOK || fromOK && !autoRandomBitsEqual(fromAttr.Bits, toAttr.Bits)
+}
+
+func autoRandomAttr(attrs []schema.Attr) (AutoRandom, bool) {
+	a := AutoRandom{}
+	return a, sqlx.Has(attrs, &a)
+}
+
+func autoRandomBitsEqual(from, to int) bool {
+	// TiDB normalizes bare AUTO_RANDOM to AUTO_RANDOM(5) in SHOW CREATE.
+	return normalizeAutoRandomBits(from) == normalizeAutoRandomBits(to)
+}
+
+func normalizeAutoRandomBits(bits int) int {
+	if bits == 0 {
+		return defaultAutoRandomBits
+	}
+	return bits
+}
 
 // priority computes the priority of each change.
 //
@@ -141,6 +192,7 @@ func (i *tinspect) InspectRealm(ctx context.Context, opts *schema.InspectRealmOp
 
 func (i *tinspect) patchSchema(ctx context.Context, s *schema.Schema) (*schema.Schema, error) {
 	for _, t := range s.Tables {
+		filterAutoRandomBase(t)
 		var createStmt CreateStmt
 		if ok := sqlx.Has(t.Attrs, &createStmt); !ok {
 			if _, err := i.createStmt(ctx, t); err != nil {
@@ -154,21 +206,69 @@ func (i *tinspect) patchSchema(ctx context.Context, s *schema.Schema) (*schema.S
 			return nil, err
 		}
 		for _, c := range t.Columns {
-			i.patchColumn(ctx, c)
+			if err := i.patchColumn(ctx, t, c); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return s, nil
 }
 
-func (i *tinspect) patchColumn(_ context.Context, c *schema.Column) {
+var reAutoRandom = regexp.MustCompile(`(?i)/\*\s*T!\s*\[\s*auto_rand\s*\]\s+AUTO_RANDOM(?:\s*\(\s*(\d+)(?:\s*,\s*(\d+))?\s*\))?\s*\*/`)
+var reAutoRandomBase = regexp.MustCompile(`(?i)(?:^|\s)AUTO_RANDOM_BASE\s*=\s*\d+`)
+
+func filterAutoRandomBase(t *schema.Table) {
+	for i := 0; i < len(t.Attrs); i++ {
+		a, ok := t.Attrs[i].(*CreateOptions)
+		if !ok {
+			continue
+		}
+		a.V = strings.TrimSpace(reAutoRandomBase.ReplaceAllString(a.V, ""))
+		if a.V == "" {
+			t.Attrs = append(t.Attrs[:i], t.Attrs[i+1:]...)
+			i--
+		}
+	}
+}
+
+func (i *tinspect) patchColumn(_ context.Context, t *schema.Table, c *schema.Column) error {
+	var stmt CreateStmt
+	if sqlx.Has(t.Attrs, &stmt) {
+		for _, line := range strings.Split(stmt.S, "\n") {
+			if !strings.Contains(line, "`"+c.Name+"`") {
+				continue
+			}
+			if matches := reAutoRandom.FindStringSubmatch(line); len(matches) > 0 {
+				if matches[2] != "" {
+					return fmt.Errorf("unsupported TiDB AUTO_RANDOM(S, R) on column %q: only AUTO_RANDOM(S) is supported", c.Name)
+				}
+				bits := defaultAutoRandomBits
+				a := &AutoRandom{}
+				if matches[1] != "" {
+					var err error
+					bits, err = strconv.Atoi(matches[1])
+					if err != nil {
+						return fmt.Errorf("invalid TiDB AUTO_RANDOM bit count %q on column %q: %w", matches[1], c.Name, err)
+					}
+				}
+				if bits < 1 || bits > 15 {
+					return fmt.Errorf("invalid TiDB AUTO_RANDOM bit count %d on column %q: want 1..15", bits, c.Name)
+				}
+				a.Bits = bits
+				schema.ReplaceOrAppend(&c.Attrs, a)
+				break
+			}
+		}
+	}
 	_, ok := c.Type.Type.(*BitType)
 	if !ok {
-		return
+		return nil
 	}
 	// TiDB has a bug where it does not format bit default value correctly.
 	if lit, ok := c.Default.(*schema.Literal); ok && !strings.HasPrefix(lit.V, "b'") {
 		lit.V = bytesToBitLiteral([]byte(lit.V))
 	}
+	return nil
 }
 
 // bytesToBitLiteral converts a bytes to MySQL bit literal.

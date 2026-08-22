@@ -31,6 +31,8 @@ func TestGitChangeDetector(t *testing.T) {
 		require.NoError(t, err, string(out))
 	}
 	git("init")
+	// Keep the default branch name stable across developer and CI Git configs.
+	git("branch", "-M", "master")
 	// Config a fake Git user for the working directory.
 	git("config", "user.name", "a8m")
 	git("config", "user.email", "a8m@atlasgo.io")

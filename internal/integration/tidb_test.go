@@ -21,6 +21,7 @@ import (
 var tidbTests = map[string]*myTest{
 	"tidb5": {port: 4309},
 	"tidb6": {port: 4310},
+	"tidb8": {port: 4311},
 }
 
 func tidbRun(t *testing.T, fn func(*myTest)) {
@@ -712,38 +713,39 @@ create table atlas_types_sanity
 				Schema: realm.Schemas[0],
 				Columns: []*schema.Column{
 					{
-						Name:    "tBit",
-						Type:    &schema.ColumnType{Type: &mysql.BitType{T: "bit", Size: 10}, Raw: "bit(10) unsigned", Null: true},
+						Name: "tBit",
+						Type: &schema.ColumnType{Type: &mysql.BitType{T: "bit", Size: 10},
+							Raw: t.valueByVersion(map[string]string{"tidb6": "bit(10)", "tidb8": "bit(10)"}, "bit(10) unsigned"), Null: true},
 						Default: &schema.Literal{V: "b'1000000001'"},
 					},
 					{
 						Name: "tInt",
 						Type: &schema.ColumnType{Type: &schema.IntegerType{T: "int", Unsigned: false},
-							Raw: t.valueByVersion(map[string]string{"mysql8": "int"}, "int(10)"), Null: false},
+							Raw: t.valueByVersion(map[string]string{"mysql8": "int", "tidb8": "int"}, "int(10)"), Null: false},
 						Default: &schema.Literal{V: "4"},
 					},
 					{
 						Name: "tTinyInt",
 						Type: &schema.ColumnType{Type: &schema.IntegerType{T: "tinyint", Unsigned: false},
-							Raw: t.valueByVersion(map[string]string{"mysql8": "tinyint"}, "tinyint(10)"), Null: true},
+							Raw: t.valueByVersion(map[string]string{"mysql8": "tinyint", "tidb8": "tinyint"}, "tinyint(10)"), Null: true},
 						Default: &schema.Literal{V: "8"},
 					},
 					{
 						Name: "tSmallInt",
 						Type: &schema.ColumnType{Type: &schema.IntegerType{T: "smallint", Unsigned: false},
-							Raw: t.valueByVersion(map[string]string{"mysql8": "smallint"}, "smallint(10)"), Null: true},
+							Raw: t.valueByVersion(map[string]string{"mysql8": "smallint", "tidb8": "smallint"}, "smallint(10)"), Null: true},
 						Default: &schema.Literal{V: "2"},
 					},
 					{
 						Name: "tMediumInt",
 						Type: &schema.ColumnType{Type: &schema.IntegerType{T: "mediumint", Unsigned: false},
-							Raw: t.valueByVersion(map[string]string{"mysql8": "mediumint"}, "mediumint(10)"), Null: true},
+							Raw: t.valueByVersion(map[string]string{"mysql8": "mediumint", "tidb8": "mediumint"}, "mediumint(10)"), Null: true},
 						Default: &schema.Literal{V: "11"},
 					},
 					{
 						Name: "tBigInt",
 						Type: &schema.ColumnType{Type: &schema.IntegerType{T: "bigint", Unsigned: false},
-							Raw: t.valueByVersion(map[string]string{"mysql8": "bigint"}, "bigint(10)"), Null: true},
+							Raw: t.valueByVersion(map[string]string{"mysql8": "bigint", "tidb8": "bigint"}, "bigint(10)"), Null: true},
 						Default: &schema.Literal{V: "4"},
 					},
 					{
@@ -836,7 +838,7 @@ create table atlas_types_sanity
 					{
 						Name: "tYear",
 						Type: &schema.ColumnType{Type: &schema.TimeType{T: "year", Precision: intp(t.intByVersion(map[string]int{"mysql8": 0}, 4))},
-							Raw: t.valueByVersion(map[string]string{"mysql8": "year"}, "year(4) unsigned"), Null: true},
+							Raw: t.valueByVersion(map[string]string{"mysql8": "year", "tidb6": "year(4)", "tidb8": "year(4)"}, "year(4) unsigned"), Null: true},
 					},
 					{
 						Name: "tVarchar",
@@ -1017,7 +1019,7 @@ create table atlas_types_sanity
 					{
 						Name: "tBigInt2",
 						Type: &schema.ColumnType{Type: &schema.IntegerType{T: "bigint", Unsigned: false},
-							Raw: t.valueByVersion(map[string]string{"mysql8": "bigint"}, "bigint(10)"), Null: true},
+							Raw: t.valueByVersion(map[string]string{"mysql8": "bigint", "tidb8": "bigint"}, "bigint(10)"), Null: true},
 						Default: &schema.Literal{V: "4"},
 					},
 				},
@@ -1036,5 +1038,40 @@ create table atlas_types_sanity
 			t.migrate()
 			rmCreateStmt(tbl)
 		})
+	})
+}
+
+func TestTiDB_AutoRandom(t *testing.T) {
+	const name = "fresnel_auto_random"
+	tidbRun(t, func(t *myTest) {
+		t.dropTables(name)
+		_, err := t.db.Exec(fmt.Sprintf(`
+CREATE TABLE %s (
+  id BIGINT /* [jooq ignore start] */ auto_random /* [jooq ignore stop] */ PRIMARY KEY
+)`, name))
+		require.NoError(t, err)
+
+		current := t.loadTable(name)
+		require.NotNil(t, current)
+		require.Len(t, current.Columns, 1)
+		autoRandom := &mysql.AutoRandom{}
+		var found bool
+		for _, attr := range current.Columns[0].Attrs {
+			if a, ok := attr.(*mysql.AutoRandom); ok {
+				*autoRandom = *a
+				found = true
+				break
+			}
+		}
+		require.True(t, found)
+		// TiDB normalizes bare AUTO_RANDOM to its default bit count in SHOW CREATE.
+		require.Equal(t, 5, autoRandom.Bits)
+
+		desired := t.loadTable(name)
+		desired.Columns[0].Attrs = []schema.Attr{&mysql.AutoRandom{}}
+		require.Empty(t, t.diff(current, desired))
+		desired.Columns[0].Attrs = nil
+		_, err = t.drv.SchemaDiff(schema.New("test").AddTables(current), schema.New("test").AddTables(desired))
+		require.EqualError(t, err, `TiDB does not support altering AUTO_RANDOM on column "id"; recreate the column or table`)
 	})
 }

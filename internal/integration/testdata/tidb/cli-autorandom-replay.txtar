@@ -1,0 +1,10 @@
+only tidb5 tidb6 tidb8
+
+atlas schema inspect -u file://schema.sql --dev-url DEV_URL > inspected.hcl
+grep 'auto_random = 5' inspected.hcl
+grep 'type.*bigint' inspected.hcl
+
+-- schema.sql --
+CREATE TABLE users (
+  id BIGINT /*T![auto_rand] AUTO_RANDOM(5) */ PRIMARY KEY
+);

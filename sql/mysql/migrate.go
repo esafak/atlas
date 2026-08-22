@@ -361,6 +361,9 @@ func (s *state) alterTable(t *schema.Table, changes []schema.Change) error {
 				name = change.To.Name
 				reverse = append(reverse, &schema.RenameTable{From: change.To, To: change.From})
 			case *schema.AddColumn:
+				if s.TiDB() && hasAutoRandom(change.C) {
+					return fmt.Errorf("TiDB does not support adding AUTO_RANDOM column %q; create it with the table", change.C.Name)
+				}
 				b.P("ADD COLUMN")
 				if err := s.column(b, t, change.C); err != nil {
 					return err
@@ -571,6 +574,15 @@ func (s *state) column(b *sqlx.Builder, t *schema.Table, c *schema.Column) error
 			if a.V > 0 && !sqlx.Has(t.Attrs, &AutoIncrement{}) {
 				t.Attrs = append(t.Attrs, a)
 			}
+		case *AutoRandom:
+			if !s.TiDB() {
+				return fmt.Errorf("AUTO_RANDOM is only supported by TiDB")
+			}
+			bits := normalizeAutoRandomBits(a.Bits)
+			if bits < 1 || bits > 15 {
+				return fmt.Errorf("invalid TiDB AUTO_RANDOM bit count %d: want 1..15", bits)
+			}
+			b.P(fmt.Sprintf("/*T![auto_rand] AUTO_RANDOM(%d) */", bits))
 		default:
 			s.attr(b, a)
 		}

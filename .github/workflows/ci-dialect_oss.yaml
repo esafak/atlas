@@ -383,7 +383,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       tidb6:
-        image: pingcap/tidb:v6.0.0
+        image: pingcap/tidb:v6.6.0
         ports:
           - 4310:4000
     steps:
@@ -394,6 +394,21 @@ jobs:
       - name: Run integration tests for tidb6
         working-directory: internal/integration
         run: go test -race -count=2 -v -run="TiDB" -version="tidb6" -timeout 15m ./...
+  integration-tidb8:
+    runs-on: ubuntu-latest
+    services:
+      tidb8:
+        image: pingcap/tidb:v8.5.3
+        ports:
+          - 4311:4000
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: cmd/atlas/go.mod
+      - name: Run integration tests for tidb8
+        working-directory: internal/integration
+        run: go test -race -count=2 -v -run="TiDB" -version="tidb8" -timeout 15m ./...
   integration-cockroach:
     runs-on: ubuntu-latest
     services:

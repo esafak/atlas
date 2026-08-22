@@ -64,6 +64,20 @@ func TestScanner_StmtsGroup(t *testing.T) {
 	}
 }
 
+func TestScanner_TiDBExecutableComments(t *testing.T) {
+	sc := &Scanner{}
+	inline, err := sc.Scan("CREATE TABLE users (id bigint /*T![auto_rand] AUTO_RANDOM(5) */);")
+	require.NoError(t, err)
+	require.Len(t, inline, 1)
+	require.Contains(t, inline[0].Text, "/*T![auto_rand] AUTO_RANDOM(5) */")
+
+	leading, err := sc.Scan("/*T![auto_rand] AUTO_RANDOM(5) */\nCREATE TABLE users (id bigint);")
+	require.NoError(t, err)
+	require.Len(t, leading, 1)
+	require.NotContains(t, leading[0].Text, "/*T![auto_rand]")
+	require.NotEmpty(t, leading[0].Comments)
+}
+
 func TestScanner_EscapedStrings(t *testing.T) {
 	path := filepath.Join("testdata", "lexescaped")
 	dir, err := NewLocalDir(path)

@@ -54,6 +54,19 @@ func TestMySQL_Script(t *testing.T) {
 	})
 }
 
+func TestTiDB_Script(t *testing.T) {
+	tidbRun(t, func(t *myTest) {
+		testscript.Run(t.T, testscript.Params{
+			Dir:   "testdata/tidb",
+			Setup: t.setupScript,
+			Cmds: map[string]func(ts *testscript.TestScript, neg bool, args []string){
+				"only":  cmdOnly,
+				"atlas": t.cmdCLI,
+			},
+		})
+	})
+}
+
 func TestPostgres_Script(t *testing.T) {
 	pgRun(t, func(t *pgTest) {
 		testscript.Run(t.T, testscript.Params{
@@ -108,7 +121,11 @@ func (t *myTest) setupScript(env *testscript.Env) error {
 		"CREATE SCHEMA IF NOT EXISTS %s",
 		"DROP SCHEMA IF EXISTS %s",
 		func(tt testing.TB, schema string) migrate.Driver {
-			dev, err := sqlclient.Open(context.Background(), fmt.Sprintf("mysql://root:pass@localhost:%d/%s", t.port, schema))
+			pass := ":pass"
+			if t.tidb() {
+				pass = ""
+			}
+			dev, err := sqlclient.Open(context.Background(), fmt.Sprintf("mysql://root%s@localhost:%d/%s", pass, t.port, schema))
 			require.NoError(tt, err)
 			tt.Cleanup(func() { require.NoError(tt, dev.Close()) })
 			return dev.Driver

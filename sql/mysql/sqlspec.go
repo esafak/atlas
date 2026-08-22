@@ -126,7 +126,7 @@ var (
 	// EvalMariaHCLBytes is a helper that evaluates a MariaDB HCL document from a byte slice.
 	EvalMariaHCLBytes             = specutil.HCLBytesFunc(EvalMariaHCL)
 	specOptions, mariaSpecOptions []schemahcl.Option
-	specFuncs = &specutil.SchemaFuncs{
+	specFuncs                     = &specutil.SchemaFuncs{
 		Table: tableSpec,
 	}
 	scanFuncs = &specutil.ScanFuncs{
@@ -265,6 +265,32 @@ func convertColumn(spec *sqlspec.Column, _ *schema.Table) (*schema.Column, error
 			c.AddAttrs(&AutoIncrement{})
 		}
 	}
+	if attr, ok := spec.Attr("auto_random"); ok {
+		a := &AutoRandom{}
+		switch {
+		case attr.V.Type().Equals(cty.Bool):
+			b, err := attr.Bool()
+			if err != nil {
+				return nil, err
+			}
+			if !b {
+				return nil, fmt.Errorf(`attribute "auto_random" must be true or an integer in the range 1..15`)
+			}
+			a.Bits = defaultAutoRandomBits
+		case attr.V.Type().Equals(cty.Number):
+			bits, err := attr.Int64()
+			if err != nil {
+				return nil, err
+			}
+			if bits < 1 || bits > 15 {
+				return nil, fmt.Errorf(`attribute "auto_random" must be true or an integer in the range 1..15`)
+			}
+			a.Bits = int(bits)
+		default:
+			return nil, fmt.Errorf(`attribute "auto_random" must be true or a positive integer`)
+		}
+		c.AddAttrs(a)
+	}
 	if err := specutil.ConvertGenExpr(spec.Remain(), c, storedOrVirtual); err != nil {
 		return nil, err
 	}
@@ -389,6 +415,9 @@ func columnSpec(c *schema.Column, t *schema.Table) (*sqlspec.Column, error) {
 	}
 	if sqlx.Has(c.Attrs, &AutoIncrement{}) {
 		spec.Extra.Attrs = append(spec.Extra.Attrs, schemahcl.BoolAttr("auto_increment", true))
+	}
+	if a := (AutoRandom{}); sqlx.Has(c.Attrs, &a) {
+		spec.Extra.Attrs = append(spec.Extra.Attrs, schemahcl.IntAttr("auto_random", normalizeAutoRandomBits(a.Bits)))
 	}
 	if x := (schema.GeneratedExpr{}); sqlx.Has(c.Attrs, &x) {
 		spec.Extra.Children = append(spec.Extra.Children, specutil.FromGenExpr(x, storedOrVirtual))
