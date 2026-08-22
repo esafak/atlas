@@ -1,0 +1,19 @@
+cmd/atlas/internal/cmdapi/cmdapi.go
+  s_e2ab37f3db5268::t_9231aaa50740f0 24,650
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "15b7c6f474102cdf20ee8e9a8b5b70cee2159504",
+  "prompts": {},
+  "sessions": {
+    "s_e2ab37f3db5268": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fd4d933ceffe2XkmuxGOUnO2Fh",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}
