@@ -58,6 +58,7 @@ var SpecOptions = append(
 		schemahcl.WithDataSource("remote_schema", RemoteSchema),
 		schemahcl.WithDataSource("hcl_schema", SchemaHCL),
 		schemahcl.WithDataSource("external_schema", SchemaExternal),
+		schemahcl.WithDataSource("composite_schema", CompositeSchema),
 		schemahcl.WithDataSource("aws_rds_token", AWSRDSToken),
 		schemahcl.WithDataSource("gcp_cloudsql_token", GCPCloudSQLToken),
 	},
@@ -637,8 +638,113 @@ func StateReaderAtlas(context.Context, *StateReaderConfig) (*StateReadCloser, er
 }
 
 // SchemaExternal is a data source that for reading external schemas.
-func SchemaExternal(context.Context, *hcl.EvalContext, *hclsyntax.Block) (cty.Value, error) {
-	return cty.Zero, UnsupportedErr("data.external_schema")
+func SchemaExternal(ctx context.Context, ectx *hcl.EvalContext, block *hclsyntax.Block) (cty.Value, error) {
+	var (
+		args struct {
+			Program []string `hcl:"program"`
+			Dir     string   `hcl:"working_dir,optional"`
+			Remain  hcl.Body `hcl:",remain"`
+		}
+		errorf = blockError("data.external_schema", block)
+	)
+	if diags := gohcl.DecodeBody(block.Body, ectx, &args); diags.HasErrors() {
+		return cty.NilVal, errorf("decoding body: %v", diags)
+	}
+	attrs, diags := args.Remain.JustAttributes()
+	if diags.HasErrors() {
+		return cty.NilVal, errorf("getting attributes: %v", diags)
+	}
+	if len(attrs) > 0 {
+		return cty.NilVal, errorf("unexpected attributes: %v", attrs)
+	}
+	if len(args.Program) == 0 {
+		return cty.NilVal, errorf("program cannot be empty")
+	}
+	cmd := exec.CommandContext(ctx, args.Program[0], args.Program[1:]...)
+	if args.Dir != "" {
+		cmd.Dir = args.Dir
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		msg := err.Error()
+		if err1 := (*exec.ExitError)(nil); errors.As(err, &err1) && len(err1.Stderr) > 0 {
+			msg = string(err1.Stderr)
+		}
+		return cty.NilVal, errorf("running program %v: %v", cmd.Path, msg)
+	}
+	dir := migrate.OpenMemDir(path.Join("external_schema", block.Labels[1]))
+	if err := dir.WriteFile("schema.sql", out); err != nil {
+		return cty.NilVal, errorf("writing schema: %v", err)
+	}
+	sum, err := dir.Checksum()
+	if err != nil {
+		return cty.NilVal, errorf("hashing schema: %v", err)
+	}
+	if err := migrate.WriteSumFile(dir, sum); err != nil {
+		return cty.NilVal, errorf("writing schema checksum: %v", err)
+	}
+	u := fmt.Sprintf("mem://%s", path.Join("external_schema", block.Labels[1]))
+	memLoader.states[u] = StateLoaderFunc(func(ctx context.Context, config *StateReaderConfig) (*StateReadCloser, error) {
+		return stateSchemaSQL(ctx, config, dir)
+	})
+	return cty.ObjectVal(map[string]cty.Value{"url": cty.StringVal(u)}), nil
+}
+
+// CompositeSchema combines schemas loaded from other schema data sources.
+func CompositeSchema(_ context.Context, ectx *hcl.EvalContext, block *hclsyntax.Block) (cty.Value, error) {
+	content, diags := block.Body.Content(&hcl.BodySchema{Blocks: []hcl.BlockHeaderSchema{{Type: "schema", LabelNames: []string{"name"}}}})
+	if diags.HasErrors() {
+		return cty.NilVal, blockError("data.composite_schema", block)("decoding body: %v", diags)
+	}
+	type source struct {
+		URL string `hcl:"url"`
+	}
+	var urls []string
+	for _, b := range content.Blocks {
+		var s source
+		if diags := gohcl.DecodeBody(b.Body, ectx, &s); diags.HasErrors() {
+			return cty.NilVal, blockError("data.composite_schema", block)("decoding schema %q: %v", b.Labels[0], diags)
+		}
+		urls = append(urls, s.URL)
+	}
+	if len(urls) == 0 {
+		return cty.NilVal, blockError("data.composite_schema", block)("at least one schema block is required")
+	}
+	u := fmt.Sprintf("mem://composite_schema/%s", block.Labels[1])
+	memLoader.states[u] = StateLoaderFunc(func(ctx context.Context, config *StateReaderConfig) (*StateReadCloser, error) {
+		var combined = &schema.Realm{}
+		for _, raw := range urls {
+			sourceURL, err := url.Parse(raw)
+			if err != nil {
+				return nil, err
+			}
+			loader, ok := States.Loader(sourceURL.Scheme)
+			if !ok {
+				return nil, fmt.Errorf("unsupported composite schema URL scheme %q", sourceURL.Scheme)
+			}
+			cfg := *config
+			cfg.URLs = []*url.URL{sourceURL}
+			sr, err := loader.LoadState(ctx, &cfg)
+			if err != nil {
+				return nil, err
+			}
+			r, err := sr.ReadState(ctx)
+			_ = sr.Close()
+			if err != nil {
+				return nil, err
+			}
+			for _, src := range r.Schemas {
+				dst, exists := combined.Schema(src.Name)
+				if !exists {
+					combined.AddSchemas(src)
+					continue
+				}
+				dst.AddTables(src.Tables...).AddViews(src.Views...).AddObjects(src.Objects...)
+			}
+		}
+		return &StateReadCloser{StateReader: migrate.Realm(combined), HCL: true}, nil
+	})
+	return cty.ObjectVal(map[string]cty.Value{"url": cty.StringVal(u)}), nil
 }
 
 // EntLoader is a StateLoader for loading ent.Schema's as StateReader's.
@@ -657,7 +763,24 @@ func (l EntLoader) MigrateDiff(context.Context, *MigrateDiffOptions) error {
 // InitBlock returns the handler for the "atlas" init block.
 func (c *AtlasConfig) InitBlock() schemahcl.Option {
 	return schemahcl.WithInitBlock("atlas", func(_ context.Context, ectx *hcl.EvalContext, block *hclsyntax.Block) (cty.Value, error) {
-		return cty.Zero, UnsupportedErr("atlas block")
+		var args struct {
+			Cloud *struct {
+				Token   string `hcl:"token,optional"`
+				URL     string `hcl:"url,optional"`
+				Org     string `hcl:"org,optional"`
+				Project string `hcl:"project,optional"`
+			} `hcl:"cloud,block"`
+		}
+		if diags := gohcl.DecodeBody(block.Body, ectx, &args); diags.HasErrors() {
+			return cty.NilVal, fmt.Errorf("atlas: decoding block: %v", diags)
+		}
+		if args.Cloud != nil {
+			c.Token, c.Org, c.Project = args.Cloud.Token, args.Cloud.Org, args.Cloud.Project
+			if c.Token != "" {
+				c.Client = cloudapi.New(args.Cloud.URL, c.Token)
+			}
+		}
+		return cty.EmptyObjectVal, nil
 	})
 }
 

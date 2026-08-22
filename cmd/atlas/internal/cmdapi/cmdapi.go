@@ -20,8 +20,8 @@ import (
 
 	"ariga.io/atlas/cmd/atlas/internal/cmdext"
 	"ariga.io/atlas/cmd/atlas/internal/cmdlog"
-	cmdmigrate "ariga.io/atlas/cmd/atlas/internal/migrate"
 	"ariga.io/atlas/cmd/atlas/internal/cmdstate"
+	cmdmigrate "ariga.io/atlas/cmd/atlas/internal/migrate"
 	"ariga.io/atlas/cmd/atlas/internal/migratelint"
 	"ariga.io/atlas/schemahcl"
 	"ariga.io/atlas/sql/migrate"
@@ -647,7 +647,7 @@ func init() {
 		migrateStatusCmd(),
 		migrateValidateCmd(),
 		unsupportedCommand("migrate", "checkpoint"),
-		unsupportedCommand("migrate", "down"),
+		migrateDownCmd(),
 		unsupportedCommand("migrate", "rebase"),
 		unsupportedCommand("migrate", "rm"),
 		unsupportedCommand("migrate", "edit"),

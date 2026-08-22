@@ -7,6 +7,8 @@ package cmdlog
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -802,6 +804,18 @@ func (s *SchemaInspect) MarshalHCL() (string, error) {
 		return "", err
 	}
 	return string(spec), nil
+}
+
+// Hash returns a stable base64-encoded hash of the inspected schema's canonical HCL
+// representation. It is intentionally computed from MarshalSpec so callers can
+// use it as an idempotency key without depending on database-specific output.
+func (s *SchemaInspect) Hash() (string, error) {
+	spec, err := s.client.MarshalSpec(s.Realm)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(spec)
+	return base64.StdEncoding.EncodeToString(sum[:]), nil
 }
 
 // RedactedURL returns the inspected url redacted.

@@ -406,6 +406,56 @@ output = local.dot_env.URL
 	require.Equal(t, "https://example.com", v.Output)
 }
 
+func TestExternalSchemaAndCompositeSchema(t *testing.T) {
+	var v struct {
+		Users string `spec:"users"`
+		Posts string `spec:"posts"`
+		App   string `spec:"app"`
+	}
+	state := schemahcl.New(cmdext.SpecOptions...)
+	err := state.EvalBytes([]byte(`
+data "external_schema" "users" {
+  program = ["echo", "create table users (id int primary key);"]
+}
+data "external_schema" "posts" {
+  program = ["echo", "create table posts (id int primary key);"]
+}
+data "composite_schema" "app" {
+  schema "public" { url = data.external_schema.users.url }
+  schema "public" { url = data.external_schema.posts.url }
+}
+users = data.external_schema.users.url
+posts = data.external_schema.posts.url
+app = data.composite_schema.app.url
+`), &v, nil)
+	require.NoError(t, err)
+	dev, err := sqlclient.Open(context.Background(), "sqlite://test?mode=memory")
+	require.NoError(t, err)
+	defer dev.Close()
+	load := func(raw string, database *sqlclient.Client) *cmdext.StateReadCloser {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		loader, ok := cmdext.States.Loader(u.Scheme)
+		require.True(t, ok)
+		sr, err := loader.LoadState(context.Background(), &cmdext.StateReaderConfig{URLs: []*url.URL{u}, Dev: database})
+		require.NoError(t, err)
+		return sr
+	}
+	users := load(v.Users, dev)
+	defer users.Close()
+	posts := load(v.Posts, dev)
+	defer posts.Close()
+	devApp, err := sqlclient.Open(context.Background(), "sqlite://composite?mode=memory")
+	require.NoError(t, err)
+	defer devApp.Close()
+	app := load(v.App, devApp)
+	defer app.Close()
+	realm, err := app.ReadState(context.Background())
+	require.NoError(t, err)
+	require.Len(t, realm.Schemas, 1)
+	require.Len(t, realm.Schemas[0].Tables, 2)
+}
+
 // backupEnv backs up the current value of an environment variable
 // and returns a function to restore it.
 func backupEnv(keys ...string) (restoreFunc func()) {

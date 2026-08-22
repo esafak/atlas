@@ -5,6 +5,7 @@
 package cmdapi
 
 import (
+	"ariga.io/atlas/atlasexec"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -34,6 +35,25 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMigrateDownReportJSON(t *testing.T) {
+	report := migrateDownReport{
+		Planned:  []migrateDownFile{{Name: "2.sql", Version: "2", Description: "second"}},
+		Reverted: []migrateDownFile{{Name: "2.sql", Version: "2", Description: "second"}},
+		Current:  "2",
+		Target:   "1",
+		Total:    1,
+		Status:   "APPLIED",
+	}
+	b, err := json.Marshal(report)
+	require.NoError(t, err)
+	var got atlasexec.MigrateDown
+	require.NoError(t, json.Unmarshal(b, &got))
+	require.Equal(t, "APPLIED", got.Status)
+	require.Equal(t, "1", got.Target)
+	require.Len(t, got.Planned, 1)
+	require.Len(t, got.Reverted, 1)
+}
 
 func TestMigrate(t *testing.T) {
 	_, err := runCmd(migrateCmd())

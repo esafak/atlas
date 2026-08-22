@@ -7,6 +7,7 @@ package cmdlog_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"path/filepath"
@@ -132,6 +133,26 @@ func TestSchemaInspect_MarshalSQL(t *testing.T) {
 	b, err := report.MarshalSQL()
 	require.NoError(t, err)
 	require.Equal(t, "-- Create \"users\" table\nCREATE TABLE `users` (`id` int NOT NULL);\n", b)
+}
+
+func TestSchemaInspect_Hash(t *testing.T) {
+	ctx := context.Background()
+	client, err := sqlclient.Open(ctx, "sqlite://hash?mode=memory")
+	require.NoError(t, err)
+	defer client.Close()
+	report := cmdlog.NewSchemaInspect(ctx, client, schema.NewRealm(
+		schema.New("main").AddTables(schema.NewTable("users").AddColumns(schema.NewIntColumn("id", "int"))),
+	))
+	hash, err := report.Hash()
+	require.NoError(t, err)
+	require.Len(t, hash, 44)
+	_, err = base64.StdEncoding.DecodeString(hash)
+	require.NoError(t, err)
+	other, err := cmdlog.NewSchemaInspect(ctx, client, schema.NewRealm(
+		schema.New("main").AddTables(schema.NewTable("posts").AddColumns(schema.NewIntColumn("id", "int"))),
+	)).Hash()
+	require.NoError(t, err)
+	require.NotEqual(t, hash, other)
 }
 
 func TestSchemaInspect_EncodeSQL(t *testing.T) {

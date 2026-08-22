@@ -1227,6 +1227,226 @@ func migrateValidateRun(cmd *cobra.Command, _ []string, flags migrateValidateFla
 	return nil
 }
 
+type migrateDownFlags struct {
+	url            string
+	devURL         string
+	dirURL         string
+	dirFormat      string
+	revisionSchema string
+	format         string
+	dryRun         bool
+	lockTimeout    time.Duration
+	toVersion      string
+}
+
+type migrateDownReport struct {
+	Planned  []migrateDownFile `json:"Planned,omitempty"`
+	Reverted []migrateDownFile `json:"Reverted,omitempty"`
+	Current  string            `json:"Current,omitempty"`
+	Target   string            `json:"Target,omitempty"`
+	Total    int               `json:"Total,omitempty"`
+	Status   string            `json:"Status,omitempty"`
+	Start    time.Time
+	End      time.Time
+	Error    string `json:"Error,omitempty"`
+}
+
+type migrateDownFile struct {
+	Name        string
+	Version     string
+	Description string
+}
+
+// migrateDownCmd represents the 'atlas migrate down' subcommand. The target
+// schema is reconstructed by replaying the migration directory on the dev
+// database, then the live database is diffed and migrated to that state.
+func migrateDownCmd() *cobra.Command {
+	var flags migrateDownFlags
+	cmd := &cobra.Command{
+		Use:   "down [flags] [to-version]",
+		Short: "Reverts applied migration files to a target version.",
+		Args:  cobra.MaximumNArgs(1),
+		PreRunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				flags.toVersion = args[0]
+			}
+			if err := migrateFlagsFromConfig(cmd); err != nil {
+				return err
+			}
+			if err := dirFormatBC(flags.dirFormat, &flags.dirURL); err != nil {
+				return err
+			}
+			return checkDir(cmd, flags.dirURL, false)
+		},
+		RunE: RunE(func(cmd *cobra.Command, _ []string) error {
+			return migrateDownRun(cmd, flags)
+		}),
+	}
+	cmd.Flags().SortFlags = false
+	addFlagURL(cmd.Flags(), &flags.url)
+	addFlagDevURL(cmd.Flags(), &flags.devURL)
+	addFlagDirURL(cmd.Flags(), &flags.dirURL)
+	addFlagDirFormat(cmd.Flags(), &flags.dirFormat)
+	addFlagRevisionSchema(cmd.Flags(), &flags.revisionSchema)
+	addFlagFormat(cmd.Flags(), &flags.format)
+	addFlagDryRun(cmd.Flags(), &flags.dryRun)
+	addFlagLockTimeout(cmd.Flags(), &flags.lockTimeout)
+	cmd.Flags().StringVar(&flags.toVersion, "to-version", "", "target migration version")
+	return cmd
+}
+
+func migrateDownRun(cmd *cobra.Command, flags migrateDownFlags) (err error) {
+	ctx := cmd.Context()
+	start := time.Now()
+	dirURL, err := url.Parse(flags.dirURL)
+	if err != nil {
+		return fmt.Errorf("parse dir-url: %w", err)
+	}
+	dir, err := cmdmigrate.DirURL(ctx, dirURL, false)
+	if err != nil {
+		return err
+	}
+	client, err := sqlclient.Open(ctx, flags.url)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	if !flags.dryRun {
+		unlock, err := client.Driver.Lock(ctx, applyLockValue, flags.lockTimeout)
+		if err != nil {
+			return fmt.Errorf("acquiring database lock: %w", err)
+		}
+		defer func() {
+			if unlockErr := unlock(); unlockErr != nil {
+				err = errors.Join(err, fmt.Errorf("releasing database lock: %w", unlockErr))
+			}
+		}()
+	}
+	if err := checkRevisionSchemaClarity(cmd, client, flags.revisionSchema); err != nil {
+		return err
+	}
+	rrw, err := entRevisions(ctx, client, flags.revisionSchema)
+	if err != nil {
+		return err
+	}
+	if err := rrw.Migrate(ctx); err != nil {
+		return err
+	}
+	revisions, err := rrw.ReadRevisions(ctx)
+	if err != nil {
+		return err
+	}
+	if len(revisions) == 0 {
+		return nil
+	}
+	if flags.devURL == "" {
+		return errors.New("--dev-url is required for migrate down")
+	}
+	if flags.toVersion == "" {
+		return errors.New("a target version is required")
+	}
+	files, err := dir.Files()
+	if err != nil {
+		return err
+	}
+	versionIndex := make(map[string]int, len(files))
+	for i, file := range files {
+		versionIndex[file.Version()] = i
+	}
+	targetIndex, ok := versionIndex[flags.toVersion]
+	if !ok {
+		return fmt.Errorf("migration with version %q not found", flags.toVersion)
+	}
+	var revert []*migrate.Revision
+	for i := len(revisions) - 1; i >= 0; i-- {
+		idx, ok := versionIndex[revisions[i].Version]
+		if !ok {
+			return fmt.Errorf("migration with version %q is missing from the directory", revisions[i].Version)
+		}
+		if idx <= targetIndex {
+			break
+		}
+		revert = append(revert, revisions[i])
+	}
+	dev, err := sqlclient.Open(ctx, flags.devURL)
+	if err != nil {
+		return err
+	}
+	defer dev.Close()
+	ex, err := migrate.NewExecutor(dev.Driver, dir, migrate.NopRevisionReadWriter{}, migrate.WithAllowDirty(true))
+	if err != nil {
+		return err
+	}
+	desired, err := ex.Replay(ctx, migrate.RealmConn(dev.Driver, nil), migrate.ReplayToVersion(flags.toVersion))
+	if err != nil && !errors.Is(err, migrate.ErrNoPendingFiles) {
+		return fmt.Errorf("prepare target schema: %w", err)
+	}
+	if desired == nil {
+		return errors.New("prepare target schema returned no state")
+	}
+	readRealm := func(c *sqlclient.Client) (*schema.Realm, error) {
+		if c.URL.Schema != "" {
+			return migrate.SchemaConn(c, "", &schema.InspectOptions{Exclude: []string{revision.Table}}).ReadState(ctx)
+		}
+		return migrate.RealmConn(c.Driver, &schema.InspectRealmOption{
+			Exclude: []string{revisionSchemaName(c, flags.revisionSchema), "*." + revision.Table},
+		}).ReadState(ctx)
+	}
+	current, err := readRealm(client)
+	if err != nil {
+		return err
+	}
+	changes, err := client.Driver.RealmDiff(current, desired)
+	if err != nil {
+		return err
+	}
+	plan, err := client.Driver.PlanChanges(ctx, "migrate down", changes)
+	if err != nil {
+		return err
+	}
+	report := migrateDownReport{Current: revisions[len(revisions)-1].Version, Target: flags.toVersion, Start: start}
+	for _, revision := range revert {
+		report.Planned = append(report.Planned, migrateDownFile{
+			Name: revision.Version, Version: revision.Version, Description: revision.Description,
+		})
+	}
+	report.Total = len(report.Planned)
+	jsonFormat := strings.Contains(flags.format, "json")
+	if !jsonFormat {
+		for _, change := range plan.Changes {
+			if flags.dryRun || flags.format != "" {
+				if _, err := fmt.Fprintln(cmd.OutOrStdout(), change.Cmd); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if flags.dryRun {
+		report.End = time.Now()
+		if jsonFormat {
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(report)
+		}
+		return nil
+	}
+	if err := client.Driver.ApplyChanges(ctx, changes); err != nil {
+		return err
+	}
+	for _, revision := range revert {
+		if err := rrw.DeleteRevision(ctx, revision.Version); err != nil {
+			return err
+		}
+		report.Reverted = append(report.Reverted, migrateDownFile{
+			Name: revision.Version, Version: revision.Version, Description: revision.Description,
+		})
+	}
+	report.End = time.Now()
+	report.Status = "APPLIED"
+	if jsonFormat {
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(report)
+	}
+	return nil
+}
+
 const applyLockValue = "atlas_migrate_execute"
 
 func checkRevisionSchemaClarity(cmd *cobra.Command, c *sqlclient.Client, revisionSchemaFlag string) error {
