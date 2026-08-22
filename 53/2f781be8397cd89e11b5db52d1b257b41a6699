@@ -1,0 +1,25 @@
+sql/mysql/tidb.go
+  s_8d5009a8567b39::t_15c35e5c6511ff 28-34,37-80,195,209-211,217-262,265,271
+sql/mysql/sqlspec.go
+  s_8d5009a8567b39::t_757e5ac85403dd 129,268-293,419-421
+sql/mysql/migrate.go
+  s_8d5009a8567b39::t_1d56dba5752f56 364-366,577-585
+sql/migrate/lex_test.go
+  s_8d5009a8567b39::t_452eb1eb0431dc 67-80
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "532f781be8397cd89e11b5db52d1b257b41a6699",
+  "prompts": {},
+  "sessions": {
+    "s_8d5009a8567b39": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fd98f1a3dffe316uTbATybz03K",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}
