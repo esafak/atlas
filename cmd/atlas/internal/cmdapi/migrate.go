@@ -1234,6 +1234,7 @@ type migrateDownFlags struct {
 	dirFormat      string
 	revisionSchema string
 	format         string
+	context        string
 	dryRun         bool
 	lockTimeout    time.Duration
 	toVersion      string
@@ -1289,6 +1290,7 @@ func migrateDownCmd() *cobra.Command {
 	addFlagDirFormat(cmd.Flags(), &flags.dirFormat)
 	addFlagRevisionSchema(cmd.Flags(), &flags.revisionSchema)
 	addFlagFormat(cmd.Flags(), &flags.format)
+	cmd.Flags().StringVar(&flags.context, "context", "", "execution context")
 	addFlagDryRun(cmd.Flags(), &flags.dryRun)
 	addFlagLockTimeout(cmd.Flags(), &flags.lockTimeout)
 	cmd.Flags().StringVar(&flags.toVersion, "to-version", "", "target migration version")
