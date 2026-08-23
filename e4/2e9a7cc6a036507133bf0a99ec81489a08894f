@@ -1,0 +1,14 @@
+cmd/atlas/internal/cmdapi/migrate.go
+  h_ea91e2db23540f 1237,1293
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "e42e9a7cc6a036507133bf0a99ec81489a08894f",
+  "prompts": {},
+  "humans": {
+    "h_ea91e2db23540f": {
+      "author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}
