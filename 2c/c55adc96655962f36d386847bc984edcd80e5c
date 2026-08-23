@@ -1,0 +1,20 @@
+.github/ops/atlas/Dockerfile
+  h_ea91e2db23540f 1-23
+.github/workflows/cli-prerelease_oss.yaml
+  h_ea91e2db23540f 12,24,113,198-310
+.github/workflows/release-atlas_oss.yaml
+  h_ea91e2db23540f 33,65-172
+docs/release-workflow.md
+  h_ea91e2db23540f 1-142
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "2cc55adc96655962f36d386847bc984edcd80e5c",
+  "prompts": {},
+  "humans": {
+    "h_ea91e2db23540f": {
+      "author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}
