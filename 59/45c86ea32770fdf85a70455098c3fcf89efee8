@@ -1,0 +1,14 @@
+.github/scripts/atlas-alpine-smoke.sh
+  h_ea91e2db23540f 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "5945c86ea32770fdf85a70455098c3fcf89efee8",
+  "prompts": {},
+  "humans": {
+    "h_ea91e2db23540f": {
+      "author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}
