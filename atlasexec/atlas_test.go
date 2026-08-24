@@ -73,6 +73,13 @@ func TestVersion(t *testing.T) {
 				SHA:     "sha",
 			},
 		},
+		{
+			env: "dev-0123456789012345678901234567890123456789",
+			expect: &atlasexec.Version{
+				Version: "dev-0123456789012345678901234567890123456789",
+				SHA:     "0123456789012345678901234567890123456789",
+			},
+		},
 	} {
 		t.Run(tt.env, func(t *testing.T) {
 			t.Setenv("TEST_ARGS", "version")

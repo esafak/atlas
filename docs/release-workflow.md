@@ -86,11 +86,29 @@ The binaries are built from this repository's source and signed with Cosign.
 The image job verifies both the checksum and the Cosign bundle before copying
 the binaries into the image.
 
-The Alpine images require statically linked binaries. Both release workflows
-set `CGO_ENABLED=0` for both architectures so the images have consistent
-runtime behavior. SQLite's cgo-backed runtime is outside the fork's validated
-release matrix; do not claim SQLite support for these images without a
-separately approved musl build and test matrix.
+The immutable release workflow keeps this contract unchanged and sets
+`CGO_ENABLED=0` for both architectures. Its binaries are therefore suitable
+for the Alpine image and remain the production release assets.
+
+The development workflow has two explicit consumers. `atlas-linux-amd64` is a
+cgo-enabled host/test artifact for the Operator's real SQLite driver, while
+`atlas-linux-arm64` remains portable. The image job never consumes either host
+artifact; it consumes the additionally signed static payloads
+`atlas-alpine-linux-amd64` and `atlas-alpine-linux-arm64`, each with its own
+`.sha256` and `.bundle` sidecars. The image job verifies those exact payloads,
+stages them under the Dockerfile's `atlas-${TARGETARCH}` contract, and runs
+both architecture images against the pinned TiDB smoke target before pushing.
+The static image payloads do not claim cgo-backed SQLite support.
+
+This boundary exists because a cgo-enabled Linux binary dynamically linked to
+glibc cannot execute in an Alpine/musl image. The 2026-08-24 canary exposed the
+failure as `/atlas: not found` during schema preflight. CI must catch a similar
+regression in the image smoke test rather than during Kubernetes
+synchronization.
+
+The canary also reported a missing `global-dev-url` secret. That is an
+unrelated Fresnel deployment follow-up and is not fixed or validated by this
+Atlas artifact workflow.
 
 ## Image contract
 

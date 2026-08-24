@@ -230,6 +230,7 @@ func (c *Client) CloudRepoCreate(ctx context.Context, params *CloudRepoCreatePar
 }
 
 var reVersion = regexp.MustCompile(`^atlas version v(\d+\.\d+.\d+)-?([a-z0-9]*)?`)
+var reDevVersion = regexp.MustCompile(`^atlas version dev-([0-9a-f]{40})`)
 
 // Version runs the 'version' command.
 func (c *Client) Version(ctx context.Context) (*Version, error) {
@@ -242,6 +243,12 @@ func (c *Client) Version(ctx context.Context) (*Version, error) {
 		return nil, err
 	}
 	v := reVersion.FindSubmatch(out)
+	if v == nil {
+		if dev := reDevVersion.FindSubmatch(out); dev != nil {
+			sha := string(dev[1])
+			return &Version{Version: "dev-" + sha, SHA: sha}, nil
+		}
+	}
 	if v == nil {
 		return nil, errors.New("unexpected output format")
 	}
@@ -259,6 +266,10 @@ func (c *Client) Version(ctx context.Context) (*Version, error) {
 // var reVersion = regexp.MustCompile(`^atlas version v(\d+\.\d+.\d+)-?([a-z0-9]*)?`)
 func (v Version) String() string {
 	var b strings.Builder
+	if strings.HasPrefix(v.Version, "dev-") {
+		fmt.Fprintf(&b, "atlas version %s", v.Version)
+		return b.String()
+	}
 	fmt.Fprintf(&b, "atlas version v%s", v.Version)
 	if v.SHA != "" {
 		fmt.Fprintf(&b, "-%s", v.SHA)
