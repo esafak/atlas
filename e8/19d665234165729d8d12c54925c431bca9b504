@@ -1,0 +1,22 @@
+.github/scripts/atlas-alpine-smoke.sh
+  h_ea91e2db23540f 1-41
+.github/workflows/cli-prerelease_oss.yaml
+  h_ea91e2db23540f 8,14,22,28,91,97-100,117,127-148,192-196,202-206,257,264,282-290,320-325
+atlasexec/atlas.go
+  h_ea91e2db23540f 233,246-251,269-272
+atlasexec/atlas_test.go
+  h_ea91e2db23540f 76-82
+docs/release-workflow.md
+  h_ea91e2db23540f 89-111
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "e819d665234165729d8d12c54925c431bca9b504",
+  "prompts": {},
+  "humans": {
+    "h_ea91e2db23540f": {
+      "author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}
