@@ -3,7 +3,7 @@ set -euo pipefail
 
 : "${SOURCE_SHA:?SOURCE_SHA must be set}"
 TIDB_VERSION="${TIDB_VERSION:-v8.5.3}"
-TIDB_IMAGE="docker.io/pingcap/tidb:${TIDB_VERSION}"
+TIDB_IMAGE="ghcr.io/esafak/atlas/tidb:${TIDB_VERSION}"
 
 docker run -d --name atlas-tidb --platform linux/amd64 \
   "${TIDB_IMAGE}"
