@@ -8,6 +8,7 @@ package cmdapi
 import (
 	"context"
 	"encoding/csv"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -175,6 +176,11 @@ func init() {
 // parseV returns a user facing version and release notes url
 func parseV(version string) (string, string) {
 	u := "https://github.com/ariga/atlas/releases/latest"
+	if strings.HasPrefix(version, "dev-") && len(version) == len("dev-")+40 {
+		if _, err := hex.DecodeString(strings.TrimPrefix(version, "dev-")); err == nil {
+			return version, u
+		}
+	}
 	if ok := semver.IsValid(version); !ok {
 		return "- development", u
 	}

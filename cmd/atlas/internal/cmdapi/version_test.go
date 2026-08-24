@@ -37,6 +37,16 @@ func TestCLI_Version(t *testing.T) {
 			expected: "atlas version v1.2.3\nhttps://github.com/ariga/atlas/releases/tag/v1.2.3\n",
 		},
 		{
+			name: "dev release",
+			cmd: exec.Command("go", "run",
+				"-ldflags",
+				"-X ariga.io/atlas/cmd/atlas/internal/cmdapi.version=dev-3666d05b52d473978b5f02d3647843492b6b4d0a",
+				"ariga.io/atlas/cmd/atlas",
+				"version",
+			),
+			expected: "atlas version dev-3666d05b52d473978b5f02d3647843492b6b4d0a\nhttps://github.com/ariga/atlas/releases/latest\n",
+		},
+		{
 			name: "canary",
 			cmd: exec.Command("go", "run",
 				"-ldflags",
