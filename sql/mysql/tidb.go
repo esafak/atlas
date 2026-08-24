@@ -6,6 +6,7 @@ package mysql
 
 import (
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"fmt"
 	"regexp"
@@ -36,6 +37,36 @@ type (
 
 const defaultAutoRandomBits = 5
 
+var (
+	reClusteredIndex  = regexp.MustCompile(`(?i)/\*\s*T!\s*\[\s*clustered_index\s*\]\s+CLUSTERED\s*\*/`)
+	reAutoRandomAlter = regexp.MustCompile(`(?is)\bALTER\s+TABLE\b.*?/\*\s*T!\s*\[\s*auto_rand\s*\]\s+AUTO_RANDOM`)
+)
+
+// ExecContext keeps the TiDB session setting required by AUTO_INCREMENT to
+// AUTO_RANDOM ALTER statements when they are executed from versioned
+// migration files. Those statements bypass tplanApply.ApplyChanges.
+func (d *Driver) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if !d.TiDB() || !isAutoRandomAlter(query) {
+		return d.conn.ExecContext(ctx, query, args...)
+	}
+	conn, err := sqlx.SingleConn(ctx, d.conn.ExecQuerier)
+	if err != nil {
+		return nil, fmt.Errorf("TiDB AUTO_RANDOM ALTER requires a database connection: %w", err)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.Background(), "SET SESSION tidb_allow_remove_auto_inc = OFF")
+		_ = conn.Close()
+	}()
+	if _, err := conn.ExecContext(ctx, "SET SESSION tidb_allow_remove_auto_inc = ON"); err != nil {
+		return nil, fmt.Errorf("enable TiDB AUTO_INCREMENT removal: %w", err)
+	}
+	return conn.ExecContext(ctx, query, args...)
+}
+
+func isAutoRandomAlter(query string) bool {
+	return reAutoRandomAlter.MatchString(query)
+}
+
 func (d *tdiff) ColumnChange(fromT *schema.Table, from, to *schema.Column, opts *schema.DiffOptions) (schema.Change, error) {
 	change, err := d.diff.ColumnChange(fromT, from, to, opts)
 	if err != nil {
@@ -44,10 +75,61 @@ func (d *tdiff) ColumnChange(fromT *schema.Table, from, to *schema.Column, opts 
 	if !autoRandomChanged(from, to) && !hasAutoRandom(from) && !hasAutoRandom(to) {
 		return change, nil
 	}
+	// TiDB supports converting an AUTO_INCREMENT BIGINT clustered primary key
+	// to AUTO_RANDOM. The generic MySQL differ does not model column
+	// attributes, so manufacture a column change for this otherwise invisible
+	// transition. TiDB also permits increasing AUTO_RANDOM shard bits; all
+	// other AUTO_RANDOM transitions remain unsupported.
+	if change == sqlx.NoChange && (isAutoRandomConversion(fromT, from, to) || isAutoRandomBitsIncrease(from, to)) {
+		return &schema.ModifyColumn{
+			Change: schema.ChangeAttr,
+			From:   from,
+			To:     to,
+		}, nil
+	}
 	if change != sqlx.NoChange || autoRandomChanged(from, to) {
 		return nil, fmt.Errorf("TiDB does not support altering AUTO_RANDOM on column %q; recreate the column or table", to.Name)
 	}
 	return change, nil
+}
+
+func isAutoRandomBitsIncrease(from, to *schema.Column) bool {
+	var (
+		fromAttr, toAttr  AutoRandom
+		fromOK, toOK      = sqlx.Has(from.Attrs, &fromAttr), sqlx.Has(to.Attrs, &toAttr)
+		fromAutoIncrement AutoIncrement
+		toAutoIncrement   AutoIncrement
+	)
+	return fromOK && toOK && !sqlx.Has(from.Attrs, &fromAutoIncrement) &&
+		!sqlx.Has(to.Attrs, &toAutoIncrement) &&
+		normalizeAutoRandomBits(fromAttr.Bits) < normalizeAutoRandomBits(toAttr.Bits)
+}
+
+func isAutoRandomConversion(t *schema.Table, from, to *schema.Column) bool {
+	if !isAutoRandomConversionColumns(from, to) {
+		return false
+	}
+	var (
+		stmt CreateStmt
+	)
+	// AUTO_RANDOM is supported only on BIGINT primary-key columns.
+	if typ, ok := from.Type.Type.(*schema.IntegerType); !ok || !strings.EqualFold(typ.T, TypeBigInt) {
+		return false
+	}
+	if t.PrimaryKey == nil || len(t.PrimaryKey.Parts) != 1 || t.PrimaryKey.Parts[0].C != from {
+		return false
+	}
+	return sqlx.Has(t.Attrs, &stmt) && reClusteredIndex.MatchString(stmt.S)
+}
+
+func isAutoRandomConversionColumns(from, to *schema.Column) bool {
+	var (
+		fromAutoIncrement AutoIncrement
+		toAutoIncrement   AutoIncrement
+	)
+	return sqlx.Has(from.Attrs, &fromAutoIncrement) &&
+		!sqlx.Has(to.Attrs, &toAutoIncrement) &&
+		hasAutoRandom(to) && !hasAutoRandom(from)
 }
 
 func hasAutoRandom(c *schema.Column) bool {
@@ -160,13 +242,63 @@ func (p *tplanApply) PlanChanges(ctx context.Context, name string, changes []sch
 		if !plan.Reversible {
 			s.Plan.Reversible = false
 		}
+		if autoRandomChangeIrreversible(c) {
+			s.Plan.Reversible = false
+			for _, change := range plan.Changes {
+				change.Reverse = nil
+			}
+		}
 		s.Plan.Changes = append(s.Plan.Changes, plan.Changes...)
 	}
 	return &s.Plan, nil
 }
 
 func (p *tplanApply) ApplyChanges(ctx context.Context, changes []schema.Change, opts ...migrate.PlanOption) error {
-	return sqlx.ApplyChanges(ctx, changes, p, opts...)
+	if !requiresAutoRandomSession(changes) {
+		return sqlx.ApplyChanges(ctx, changes, p, opts...)
+	}
+	conn, err := sqlx.SingleConn(ctx, p.conn.ExecQuerier)
+	if err != nil {
+		return fmt.Errorf("TiDB AUTO_INCREMENT to AUTO_RANDOM conversion requires a database connection: %w", err)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.Background(), "SET SESSION tidb_allow_remove_auto_inc = OFF")
+		_ = conn.Close()
+	}()
+	if _, err := conn.ExecContext(ctx, "SET SESSION tidb_allow_remove_auto_inc = ON"); err != nil {
+		return fmt.Errorf("enable TiDB AUTO_INCREMENT removal: %w", err)
+	}
+	// Keep the session variable and all migration statements on the same
+	// connection. database/sql may otherwise select a different pooled
+	// connection for the ALTER statement.
+	pinned := *p.conn
+	pinned.ExecQuerier = conn
+	return sqlx.ApplyChanges(ctx, changes, &tplanApply{planApply{&pinned}}, opts...)
+}
+
+func requiresAutoRandomSession(changes []schema.Change) bool {
+	for _, change := range changes {
+		m, ok := change.(*schema.ModifyTable)
+		if !ok {
+			continue
+		}
+		for _, nested := range m.Changes {
+			c, ok := nested.(*schema.ModifyColumn)
+			if ok && isAutoRandomConversionColumns(c.From, c.To) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func autoRandomChangeIrreversible(change schema.Change) bool {
+	m, ok := change.(*schema.ModifyTable)
+	if !ok || len(m.Changes) != 1 {
+		return false
+	}
+	c, ok := m.Changes[0].(*schema.ModifyColumn)
+	return ok && (isAutoRandomConversionColumns(c.From, c.To) || isAutoRandomBitsIncrease(c.From, c.To))
 }
 
 func (i *tinspect) InspectSchema(ctx context.Context, name string, opts *schema.InspectOptions) (*schema.Schema, error) {

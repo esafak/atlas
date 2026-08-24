@@ -1047,13 +1047,23 @@ func TestTiDB_AutoRandom(t *testing.T) {
 		t.dropTables(name)
 		_, err := t.db.Exec(fmt.Sprintf(`
 CREATE TABLE %s (
-  id BIGINT /* [jooq ignore start] */ auto_random /* [jooq ignore stop] */ PRIMARY KEY
+  id BIGINT AUTO_INCREMENT PRIMARY KEY
 )`, name))
 		require.NoError(t, err)
 
 		current := t.loadTable(name)
 		require.NotNil(t, current)
 		require.Len(t, current.Columns, 1)
+
+		desired := t.loadTable(name)
+		desired.Columns[0].Attrs = []schema.Attr{&mysql.AutoRandom{}}
+		changes, err := t.drv.SchemaDiff(schema.New("test").AddTables(current), schema.New("test").AddTables(desired))
+		require.NoError(t, err)
+		require.Len(t, changes, 1)
+		err = t.drv.ApplyChanges(context.Background(), changes)
+		require.NoError(t, err)
+
+		current = t.loadTable(name)
 		autoRandom := &mysql.AutoRandom{}
 		var found bool
 		for _, attr := range current.Columns[0].Attrs {
@@ -1067,8 +1077,6 @@ CREATE TABLE %s (
 		// TiDB normalizes bare AUTO_RANDOM to its default bit count in SHOW CREATE.
 		require.Equal(t, 5, autoRandom.Bits)
 
-		desired := t.loadTable(name)
-		desired.Columns[0].Attrs = []schema.Attr{&mysql.AutoRandom{}}
 		require.Empty(t, t.diff(current, desired))
 		desired.Columns[0].Attrs = nil
 		_, err = t.drv.SchemaDiff(schema.New("test").AddTables(current), schema.New("test").AddTables(desired))

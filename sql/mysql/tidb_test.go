@@ -6,12 +6,14 @@ package mysql
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 
 	"ariga.io/atlas/sql/internal/sqlx"
 	"ariga.io/atlas/sql/mysql/internal/mysqlversion"
 	"ariga.io/atlas/sql/schema"
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -163,6 +165,187 @@ func TestTiDBAutoRandomPlan(t *testing.T) {
 			require.Equal(t, "CREATE TABLE `users` (`id` bigint NOT NULL "+tt.want+")", plan.Changes[0].Cmd)
 		})
 	}
+}
+
+func TestTiDBAutoRandomConversion(t *testing.T) {
+	from := &schema.Column{
+		Name:  "id",
+		Type:  &schema.ColumnType{Type: &schema.IntegerType{T: TypeBigInt}},
+		Attrs: []schema.Attr{&AutoIncrement{}},
+	}
+	to := &schema.Column{
+		Name:  from.Name,
+		Type:  &schema.ColumnType{Type: &schema.IntegerType{T: TypeBigInt}},
+		Attrs: []schema.Attr{&AutoRandom{Bits: 5}},
+	}
+	table := schema.NewTable("users").AddColumns(from)
+	table.SetPrimaryKey(schema.NewPrimaryKey(from))
+	table.AddAttrs(&CreateStmt{S: "CREATE TABLE `users` (\n  `id` bigint NOT NULL AUTO_INCREMENT,\n  PRIMARY KEY (`id`) /*T![clustered_index] CLUSTERED */\n)"})
+
+	d := &tdiff{diff{conn: &conn{V: "5.7.25-TiDB-v6.6.0"}}}
+	change, err := d.ColumnChange(table, from, to, nil)
+	require.NoError(t, err)
+	require.IsType(t, &schema.ModifyColumn{}, change)
+
+	planner := &tplanApply{planApply{conn: &conn{V: "5.7.25-TiDB-v6.6.0"}}}
+	plan, err := planner.PlanChanges(context.Background(), "test", []schema.Change{
+		&schema.ModifyTable{T: table, Changes: []schema.Change{change}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "ALTER TABLE `users` MODIFY COLUMN `id` bigint NOT NULL /*T![auto_rand] AUTO_RANDOM(5) */", plan.Changes[0].Cmd)
+	require.False(t, plan.Reversible)
+	require.Nil(t, plan.Changes[0].Reverse)
+}
+
+func TestTiDBAutoRandomConversionEnablesSessionSetting(t *testing.T) {
+	from := &schema.Column{
+		Name:  "id",
+		Type:  &schema.ColumnType{Type: &schema.IntegerType{T: TypeBigInt}},
+		Attrs: []schema.Attr{&AutoIncrement{}},
+	}
+	to := &schema.Column{
+		Name:  from.Name,
+		Type:  &schema.ColumnType{Type: &schema.IntegerType{T: TypeBigInt}},
+		Attrs: []schema.Attr{&AutoRandom{Bits: 5}},
+	}
+	table := schema.NewTable("users").AddColumns(from)
+	table.SetPrimaryKey(schema.NewPrimaryKey(from))
+	table.AddAttrs(&CreateStmt{S: "CREATE TABLE `users` (\n  `id` bigint NOT NULL AUTO_INCREMENT,\n  PRIMARY KEY (`id`) /*T![clustered_index] CLUSTERED */\n)"})
+	desired := schema.NewTable("users").AddColumns(to)
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	mock.ExpectExec("SET SESSION tidb_allow_remove_auto_inc = ON").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE `users` MODIFY COLUMN `id` bigint NOT NULL /*T![auto_rand] AUTO_RANDOM(5) */")).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET SESSION tidb_allow_remove_auto_inc = OFF").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	planner := &tplanApply{planApply{conn: &conn{
+		ExecQuerier: db,
+		V:           "5.7.25-TiDB-v6.6.0",
+	}}}
+	err = planner.ApplyChanges(context.Background(), []schema.Change{
+		&schema.ModifyTable{T: desired, Changes: []schema.Change{
+			&schema.ModifyColumn{Change: schema.ChangeAttr, From: from, To: to},
+		}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestTiDBVersionedAutoRandomAlterEnablesSessionSetting(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	mock.ExpectExec("SET SESSION tidb_allow_remove_auto_inc = ON").WillReturnResult(sqlmock.NewResult(0, 0))
+	query := "ALTER TABLE `users` MODIFY COLUMN `id` bigint NOT NULL /*T![auto_rand] AUTO_RANDOM(5) */"
+	mock.ExpectExec(regexp.QuoteMeta(query)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("SET SESSION tidb_allow_remove_auto_inc = OFF").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	d := &Driver{conn: &conn{
+		ExecQuerier: db,
+		V:           "5.7.25-TiDB-v6.6.0",
+	}}
+	_, err = d.ExecContext(context.Background(), query)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestTiDBVersionedUnrelatedAlterSkipsSessionSetting(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	query := "ALTER TABLE `users` RENAME COLUMN `auto_random_flag` TO `flag`"
+	mock.ExpectExec(regexp.QuoteMeta(query)).WillReturnResult(sqlmock.NewResult(0, 0))
+
+	d := &Driver{conn: &conn{
+		ExecQuerier: db,
+		V:           "5.7.25-TiDB-v6.6.0",
+	}}
+	_, err = d.ExecContext(context.Background(), query)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestTiDBAutoRandomConversionRequiresClusteredAutoIncrementPrimaryKey(t *testing.T) {
+	for _, tt := range []struct {
+		name              string
+		attrs             []schema.Attr
+		fromAutoIncrement bool
+	}{
+		{name: "non-clustered", fromAutoIncrement: true, attrs: []schema.Attr{&CreateStmt{S: "CREATE TABLE `users` (`id` bigint NOT NULL AUTO_INCREMENT, PRIMARY KEY (`id`) /*T![clustered_index] NONCLUSTERED */)"}}},
+		{name: "not-auto-increment", attrs: []schema.Attr{&CreateStmt{S: "CREATE TABLE `users` (`id` bigint NOT NULL, PRIMARY KEY (`id`) /*T![clustered_index] CLUSTERED */)"}}},
+		{name: "not-primary-key", fromAutoIncrement: true, attrs: []schema.Attr{&CreateStmt{S: "CREATE TABLE `users` (`id` bigint NOT NULL AUTO_INCREMENT)"}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			from := &schema.Column{
+				Name: "id",
+				Type: &schema.ColumnType{Type: &schema.IntegerType{T: TypeBigInt}},
+			}
+			if tt.fromAutoIncrement {
+				from.Attrs = []schema.Attr{&AutoIncrement{}}
+			}
+			to := &schema.Column{
+				Name:  from.Name,
+				Type:  &schema.ColumnType{Type: &schema.IntegerType{T: TypeBigInt}},
+				Attrs: []schema.Attr{&AutoRandom{Bits: 5}},
+			}
+			table := schema.NewTable("users").AddColumns(from).AddAttrs(tt.attrs...)
+			if tt.name != "not-primary-key" {
+				table.SetPrimaryKey(schema.NewPrimaryKey(from))
+			}
+
+			d := &tdiff{diff{conn: &conn{V: "5.7.25-TiDB-v6.6.0"}}}
+			_, err := d.ColumnChange(table, from, to, nil)
+			require.EqualError(t, err, `TiDB does not support altering AUTO_RANDOM on column "id"; recreate the column or table`)
+		})
+	}
+}
+
+func TestTiDBAutoRandomShardBitsIncrease(t *testing.T) {
+	from := &schema.Column{
+		Name:  "id",
+		Type:  &schema.ColumnType{Type: &schema.IntegerType{T: TypeBigInt}},
+		Attrs: []schema.Attr{&AutoRandom{Bits: 5}},
+	}
+	to := &schema.Column{
+		Name:  from.Name,
+		Type:  &schema.ColumnType{Type: &schema.IntegerType{T: TypeBigInt}},
+		Attrs: []schema.Attr{&AutoRandom{Bits: 8}},
+	}
+	table := schema.NewTable("users").AddColumns(from)
+
+	d := &tdiff{diff{conn: &conn{V: "5.7.25-TiDB-v6.6.0"}}}
+	change, err := d.ColumnChange(table, from, to, nil)
+	require.NoError(t, err)
+	require.IsType(t, &schema.ModifyColumn{}, change)
+
+	planner := &tplanApply{planApply{conn: &conn{V: "5.7.25-TiDB-v6.6.0"}}}
+	plan, err := planner.PlanChanges(context.Background(), "test", []schema.Change{
+		&schema.ModifyTable{T: table, Changes: []schema.Change{change}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "ALTER TABLE `users` MODIFY COLUMN `id` bigint NOT NULL /*T![auto_rand] AUTO_RANDOM(8) */", plan.Changes[0].Cmd)
+	require.False(t, plan.Reversible)
+	require.Nil(t, plan.Changes[0].Reverse)
+}
+
+func TestTiDBAutoRandomShardBitsDecreaseRejects(t *testing.T) {
+	from := &schema.Column{
+		Name:  "id",
+		Type:  &schema.ColumnType{Type: &schema.IntegerType{T: TypeBigInt}},
+		Attrs: []schema.Attr{&AutoRandom{Bits: 8}},
+	}
+	to := &schema.Column{
+		Name:  from.Name,
+		Type:  &schema.ColumnType{Type: &schema.IntegerType{T: TypeBigInt}},
+		Attrs: []schema.Attr{&AutoRandom{Bits: 5}},
+	}
+	table := schema.NewTable("users").AddColumns(from)
+
+	d := &tdiff{diff{conn: &conn{V: "5.7.25-TiDB-v6.6.0"}}}
+	_, err := d.ColumnChange(table, from, to, nil)
+	require.EqualError(t, err, `TiDB does not support altering AUTO_RANDOM on column "id"; recreate the column or table`)
 }
 
 func TestTiDBAutoRandomAddColumnRejects(t *testing.T) {
