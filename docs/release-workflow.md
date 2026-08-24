@@ -110,6 +110,25 @@ The canary also reported a missing `global-dev-url` secret. That is an
 unrelated Fresnel deployment follow-up and is not fixed or validated by this
 Atlas artifact workflow.
 
+### Updating the development TiDB smoke image
+
+The Alpine smoke test pulls the pinned TiDB mirror from the repository's GHCR
+namespace. To update it, authenticate `crane` with a token that has
+`write:packages`, copy the upstream multi-platform image, and update the
+`TIDB_VERSION` default in `.github/scripts/atlas-alpine-smoke.sh`:
+
+```sh
+crane auth login ghcr.io -u esafak -p "$GHCR_TOKEN"
+crane copy docker.io/pingcap/tidb:v8.5.3 \
+  ghcr.io/esafak/atlas/tidb:v8.5.3
+```
+
+Verify the destination manifest before pushing the workflow change:
+
+```sh
+crane manifest ghcr.io/esafak/atlas/tidb:v8.5.3
+```
+
 ## Image contract
 
 The production image is published to:
