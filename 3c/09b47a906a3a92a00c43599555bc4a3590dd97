@@ -1,0 +1,14 @@
+.github/workflows/cli-prerelease_oss.yaml
+  h_ea91e2db23540f 113-115
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "3c09b47a906a3a92a00c43599555bc4a3590dd97",
+  "prompts": {},
+  "humans": {
+    "h_ea91e2db23540f": {
+      "author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}
