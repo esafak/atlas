@@ -110,7 +110,9 @@ jobs:
         env:
           GOARCH: ${{ matrix.arch }}
           VERSION: dev-${{ needs.resolve.outputs.sha }}
-          CGO_ENABLED: 0
+          # The operator's host-side SQLite tests consume the amd64 artifact.
+          # Keep arm64 portable until its cross-compiler build is enabled.
+          CGO_ENABLED: ${{ matrix.arch == 'amd64' && '1' || '0' }}
         run: |
           mkdir -p ../../dist
           binary="../../dist/atlas-linux-${GOARCH}"
