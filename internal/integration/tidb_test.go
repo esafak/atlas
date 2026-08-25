@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"testing"
 
 	"ariga.io/atlas/sql/mysql"
@@ -405,6 +406,98 @@ func TestTiDB_ForeignKey(t *testing.T) {
 
 			t.migrate(&schema.ModifyTable{T: postsT, Changes: changes})
 			ensureNoChange(t, postsT, usersT)
+		})
+	})
+
+	t.Run("SharedGeneratedName", func(t *testing.T) {
+		tidbRun(t, func(t *myTest) {
+			// TiDB generates foreign-key names with a per-table counter
+			// (fk_1, fk_2, ...), so tables in the same schema commonly share
+			// constraint names. Ensure a shared name cannot cross-associate
+			// the referential actions of one table with the foreign keys of
+			// another, both on a "live" database and on a freshly replayed
+			// "desired" one (mirroring `schema apply` with --dev-url), and
+			// that diffing the two states reports no changes.
+			if t.version == "tidb5" {
+				t.Skip("foreign keys are not supported")
+			}
+			const live, dev = "atlas_fk_live", "atlas_fk_dev"
+			t.dropSchemas(live, dev)
+			for _, s := range []string{live, dev} {
+				_, err := t.db.Exec("DROP DATABASE IF EXISTS " + s)
+				require.NoError(t, err)
+				_, err = t.db.Exec("CREATE DATABASE " + s)
+				require.NoError(t, err)
+			}
+			exec := func(s string, stmts ...string) {
+				for _, stmt := range stmts {
+					_, err := t.db.Exec(strings.ReplaceAll(stmt, "{{s}}", s))
+					require.NoError(t, err)
+				}
+			}
+			// Desired state: plain replay of unnamed foreign keys.
+			exec(dev,
+				"CREATE TABLE {{s}}.idps (id INT PRIMARY KEY)",
+				`CREATE TABLE {{s}}.linked_users (id INT PRIMARY KEY, prev_id INT, idp_id INT,
+				 FOREIGN KEY (prev_id) REFERENCES {{s}}.linked_users (id),
+				 FOREIGN KEY (idp_id) REFERENCES {{s}}.idps (id) ON DELETE CASCADE)`,
+				`CREATE TABLE {{s}}.invitations (id INT PRIMARY KEY, tenant_id INT, created_by INT,
+				 FOREIGN KEY (tenant_id) REFERENCES {{s}}.idps (id),
+				 FOREIGN KEY (created_by) REFERENCES {{s}}.linked_users (id))`,
+			)
+			// Live state: identical schema built with a different DDL
+			// history (tables and constraints created in a different order).
+			exec(live,
+				"CREATE TABLE {{s}}.idps (id INT PRIMARY KEY)",
+				"CREATE TABLE {{s}}.invitations (id INT PRIMARY KEY, tenant_id INT, created_by INT)",
+				`CREATE TABLE {{s}}.linked_users (id INT PRIMARY KEY, prev_id INT, idp_id INT,
+				 FOREIGN KEY (prev_id) REFERENCES {{s}}.linked_users (id),
+				 FOREIGN KEY (idp_id) REFERENCES {{s}}.idps (id) ON DELETE CASCADE)`,
+				"ALTER TABLE {{s}}.invitations ADD FOREIGN KEY (tenant_id) REFERENCES {{s}}.idps (id)",
+				"ALTER TABLE {{s}}.invitations ADD FOREIGN KEY (created_by) REFERENCES {{s}}.linked_users (id)",
+			)
+			inspect := func(name string) *schema.Schema {
+				s, err := t.drv.InspectSchema(context.Background(), name, &schema.InspectOptions{
+					Mode: ^schema.InspectViews,
+				})
+				require.NoError(t, err)
+				return s
+			}
+			fkByColumn := func(tb *schema.Table, column string) *schema.ForeignKey {
+				for _, fk := range tb.ForeignKeys {
+					if len(fk.Columns) == 1 && fk.Columns[0].Name == column {
+						return fk
+					}
+				}
+				require.FailNowf(t, "foreign key on column %q not found on table %q", column, tb.Name)
+				return nil
+			}
+			for _, s := range []string{live, dev} {
+				rs := inspect(s)
+				usersT, ok := rs.Table("linked_users")
+				require.True(t, ok)
+				invT, ok := rs.Table("invitations")
+				require.True(t, ok)
+				require.Len(t, usersT.ForeignKeys, 2)
+				require.Len(t, invT.ForeignKeys, 2)
+				// The second constraint of each table shares the generated name fk_2.
+				fk1, fk2 := fkByColumn(usersT, "idp_id"), fkByColumn(invT, "created_by")
+				require.Equal(t, "fk_2", fk1.Symbol)
+				require.Equal(t, fk1.Symbol, fk2.Symbol)
+				// Each constraint keeps its own referential actions.
+				require.Equal(t, schema.Cascade, fk1.OnDelete)
+				require.Equal(t, schema.NoAction, fk2.OnDelete)
+			}
+			// Diffing the live state against the desired one reports no
+			// changes, although both tables share the name fk_2.
+			desired := inspect(dev)
+			liveSchema := inspect(live)
+			for _, tb := range desired.Tables {
+				liveT, ok := liveSchema.Table(tb.Name)
+				require.True(t, ok)
+				changes := t.diff(liveT, tb)
+				require.Emptyf(t, changes, "changes should be empty for table %q, but instead was %#v", tb.Name, changes)
+			}
 		})
 	})
 
