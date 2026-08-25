@@ -1,0 +1,24 @@
+cmd/atlas/internal/cmdapi/cmdapi.go
+  h_ea91e2db23540f 914-917,936-943
+cmd/atlas/internal/cmdapi/schema.go
+  h_ea91e2db23540f 86-88,111,124,476-480
+cmd/atlas/internal/cmdapi/schema_fanout.go
+  h_ea91e2db23540f 1-682
+cmd/atlas/internal/cmdapi/schema_test.go
+  h_ea91e2db23540f 487-628
+docs/schema-apply-fanout.md
+  h_ea91e2db23540f 1-48
+internal/integration/tidb_test.go
+  h_ea91e2db23540f 12-14,648-702
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "a72a8024ff787fac9e3b6013c8451844c338bbab",
+  "prompts": {},
+  "humans": {
+    "h_ea91e2db23540f": {
+      "author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}
