@@ -9,6 +9,9 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -639,6 +642,61 @@ func TestTiDB_CLI_MultiSchema(t *testing.T) {
 			charset, collate := attrs[0].(*schema.Charset), attrs[1].(*schema.Collation)
 			testCLIMultiSchemaApply(t, fmt.Sprintf(h, charset.V, collate.V, charset.V, collate.V), t.url(""), []string{"test", "test2"}, mysql.EvalHCL)
 		})
+	})
+}
+
+func TestTiDB_CLI_SchemaApplyFanout(t *testing.T) {
+	tidbRun(t, func(t *myTest) {
+		const (
+			globalDB = "atlas_fanout_global"
+			tenantA  = "atlas_fanout_tenant_a"
+			tenantB  = "atlas_fanout_tenant_b"
+			devA     = "atlas_fanout_dev_a"
+			devB     = "atlas_fanout_dev_b"
+		)
+		for _, db := range []string{globalDB, tenantA, tenantB, devA, devB} {
+			_, err := t.db.Exec("DROP DATABASE IF EXISTS `" + db + "`")
+			require.NoError(t, err)
+			_, err = t.db.Exec("CREATE DATABASE `" + db + "`")
+			require.NoError(t, err)
+		}
+		_, err := t.db.Exec("CREATE TABLE `" + globalDB + "`.dependencies (id INT PRIMARY KEY)")
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			for _, db := range []string{globalDB, tenantA, tenantB, devA, devB} {
+				_, _ = t.db.Exec("DROP DATABASE IF EXISTS `" + db + "`")
+			}
+		})
+		dir := t.TempDir()
+		src := filepath.Join(dir, "schema.sql")
+		config := filepath.Join(dir, "atlas.hcl")
+		require.NoError(t, os.WriteFile(src, []byte("CREATE TABLE users (id INT NOT NULL);\n"), 0600))
+		require.NoError(t, os.WriteFile(config, []byte(fmt.Sprintf(`variable "urls" { type = list(string) }
+env "tenants" {
+  for_each = toset(var.urls)
+  url = each.value
+  dev = replace(each.value, "tenant_", "dev_")
+  src = %q
+}`, "file://"+src)), 0600))
+		urls := []string{t.url(tenantA), t.url(tenantB)}
+		args := []string{"schema", "apply", "--config", "file://" + config, "--env", "tenants", "--var", "urls=" + urls[0], "--var", "urls=" + urls[1], "--dry-run"}
+		cmd := exec.Command(execPath(t), args...)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+		for _, db := range []string{tenantA, tenantB} {
+			var n int
+			require.NoError(t, t.db.QueryRow("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = 'users'", db).Scan(&n))
+			require.Zero(t, n)
+		}
+		args[len(args)-1] = "--auto-approve"
+		cmd = exec.Command(execPath(t), args...)
+		out, err = cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+		for _, db := range []string{tenantA, tenantB} {
+			var n int
+			require.NoError(t, t.db.QueryRow("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = 'users'", db).Scan(&n))
+			require.Equal(t, 1, n)
+		}
 	})
 }
 

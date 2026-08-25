@@ -484,6 +484,148 @@ func TestSchema_Apply(t *testing.T) {
 	)
 }
 
+func TestSchema_ApplyFanoutDryRun(t *testing.T) {
+	p := t.TempDir()
+	cfg := filepath.Join(p, "atlas.hcl")
+	src := filepath.Join(p, "schema.hcl")
+	base := filepath.Join(p, "tenant")
+	require.NoError(t, os.WriteFile(src, []byte(`schema "main" {}
+table "users" {
+  schema = schema.main
+  column "id" { type = int }
+}`), 0600))
+	require.NoError(t, os.WriteFile(cfg, []byte(`variable "urls" { type = list(string) }
+env "tenants" {
+  for_each = toset(var.urls)
+	url = format("sqlite://file:%s", each.value)
+	dev = format("sqlite://file:%s.dev", each.value)
+  src = "file://`+src+`"
+}`), 0600))
+	one := base + "-1.db"
+	two := base + "-2.db"
+	report := filepath.Join(p, "report.json")
+	cmd := schemaCmd()
+	cmd.AddCommand(schemaApplyCmd())
+	s, err := runCmd(cmd, "apply", "--config", "file://"+cfg, "--env", "tenants", "--var", "urls="+one, "--var", "urls="+two, "--dry-run", "--report", report)
+	require.NoError(t, err)
+	require.Equal(t, 2, strings.Count(s, "target-"))
+	b, err := os.ReadFile(report)
+	require.NoError(t, err)
+	var got fanoutReport
+	require.NoError(t, json.Unmarshal(b, &got))
+	require.Equal(t, "atlas.schema.apply.fanout/v1", got.Version)
+	require.Len(t, got.Plans, 2)
+	for _, target := range []string{one, two} {
+		db, err := sql.Open("sqlite3", target)
+		require.NoError(t, err)
+		var count int
+		require.NoError(t, db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'users'").Scan(&count))
+		require.Zero(t, count)
+		require.NoError(t, db.Close())
+	}
+	cmd = schemaCmd()
+	cmd.AddCommand(schemaApplyCmd())
+	_, err = runCmd(cmd, "apply", "--config", "file://"+cfg, "--env", "tenants", "--var", "urls="+one, "--var", "urls="+two, "--dry-run", "--retry-report", report)
+	require.NoError(t, err)
+	cmd = schemaCmd()
+	cmd.AddCommand(schemaApplyCmd())
+	_, err = runCmd(cmd, "apply", "--config", "file://"+cfg, "--env", "tenants", "--var", "urls="+one, "--var", "urls="+two, "--auto-approve", "--report", report)
+	require.NoError(t, err)
+	b, err = os.ReadFile(report)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(b, &got))
+	for _, plan := range got.Plans {
+		require.Equal(t, "success", plan.Status)
+	}
+	cmd = schemaCmd()
+	cmd.AddCommand(schemaApplyCmd())
+	_, err = runCmd(cmd, "apply", "--config", "file://"+cfg, "--env", "tenants", "--var", "urls="+one, "--var", "urls="+two, "--auto-approve", "--report", report)
+	require.NoError(t, err)
+	b, err = os.ReadFile(report)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(b, &got))
+	for _, plan := range got.Plans {
+		require.Equal(t, "no-op", plan.Status)
+	}
+}
+
+func TestFanoutRiskClasses(t *testing.T) {
+	tests := []struct {
+		sql   string
+		risks []string
+	}{
+		{"ALTER TABLE t MODIFY c int NOT NULL", []string{"column-rewrite", "data-dependent"}},
+		{"ALTER TABLE t DROP COLUMN c", []string{"destructive"}},
+		{"ALTER TABLE t DROP INDEX i", []string{"destructive"}},
+		{"TRUNCATE TABLE t", []string{"destructive"}},
+		{"ALTER TABLE t RENAME TO t2", []string{"destructive"}},
+		{"RENAME TABLE t TO t2", []string{"destructive"}},
+		{"ALTER TABLE t ADD UNIQUE INDEX i (c)", []string{"data-dependent", "index"}},
+		{"CREATE UNIQUE INDEX i ON t (c)", []string{"index"}},
+		{"UPDATE t SET c = 1", []string{"data-transformation"}},
+	}
+	for _, tt := range tests {
+		require.ElementsMatch(t, tt.risks, riskClasses([]string{tt.sql}))
+	}
+}
+
+func TestFanoutArtifactHashBindsNonFileSources(t *testing.T) {
+	r := schema.NewRealm(schema.New("main"))
+	a, err := desiredArtifactHash([]string{"mysql://localhost/a"}, r)
+	require.NoError(t, err)
+	b, err := desiredArtifactHash([]string{"mysql://localhost/b"}, r)
+	require.NoError(t, err)
+	require.NotEqual(t, a, b)
+}
+
+func TestFanoutFingerprintDrift(t *testing.T) {
+	planned := schema.NewRealm(schema.New("main"))
+	p := &fanoutPlan{CurrentHash: realmHash(planned), DesiredHash: realmHash(planned), ArtifactHash: "artifact"}
+	require.Empty(t, fingerprintDrift(p, planned, planned, "artifact"))
+	changed := schema.NewRealm(schema.New("main").AddTables(&schema.Table{Name: "external_writer"}))
+	require.Equal(t, "target changed after planning", fingerprintDrift(p, changed, nil, ""))
+	require.Equal(t, "desired artifact changed after planning", fingerprintDrift(p, planned, changed, "artifact"))
+}
+
+func TestSchema_ApplyFanoutPartialFailure(t *testing.T) {
+	p := t.TempDir()
+	cfg, src := filepath.Join(p, "atlas.hcl"), filepath.Join(p, "schema.hcl")
+	require.NoError(t, os.WriteFile(src, []byte(`schema "main" {}
+table "users" {
+  schema = schema.main
+  column "id" { type = int }
+}`), 0600))
+	require.NoError(t, os.WriteFile(cfg, []byte(`variable "urls" { type = list(string) }
+env "tenants" {
+  for_each = toset(var.urls)
+  url = format("sqlite://file:%s", each.value)
+  dev = format("sqlite://file:%s.dev", each.value)
+  src = "file://`+src+`"
+}`), 0600))
+	old := filepath.Join(p, "old.db")
+	db, err := sql.Open("sqlite3", old)
+	require.NoError(t, err)
+	_, err = db.Exec("CREATE TABLE old (id INTEGER)")
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+	empty := filepath.Join(p, "empty.db")
+	report := filepath.Join(p, "partial.json")
+	cmd := schemaCmd()
+	cmd.AddCommand(schemaApplyCmd())
+	_, err = runCmd(cmd, "apply", "--config", "file://"+cfg, "--env", "tenants", "--var", "urls="+old, "--var", "urls="+empty, "--auto-approve", "--report", report)
+	require.Error(t, err)
+	b, readErr := os.ReadFile(report)
+	require.NoError(t, readErr)
+	var got fanoutReport
+	require.NoError(t, json.Unmarshal(b, &got))
+	statuses := map[string]int{}
+	for _, plan := range got.Plans {
+		statuses[plan.Status]++
+	}
+	require.Equal(t, 1, statuses["failed"])
+	require.Equal(t, 1, statuses["success"])
+}
+
 func TestSchema_ApplyLog(t *testing.T) {
 	t.Run("DryRun", func(t *testing.T) {
 		db := openSQLite(t, "")

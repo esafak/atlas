@@ -911,6 +911,10 @@ func migrateDiffRun(cmd *cobra.Command, args []string, flags migrateDiffFlags, e
 
 // schemaApplyRunE is the community version of the 'atlas schema apply' command.
 func schemaApplyRunE(cmd *cobra.Command, _ []string, flags *schemaApplyFlags) error {
+	return schemaApplyRunEWithFanout(cmd, nil, flags, &fanoutFlags{})
+}
+
+func schemaApplyRunEWithFanout(cmd *cobra.Command, _ []string, flags *schemaApplyFlags, fanout *fanoutFlags) error {
 	switch {
 	case flags.edit:
 		return AbortErrorf("%s", unsupportedMessage("schema", "apply --edit"))
@@ -929,8 +933,14 @@ func schemaApplyRunE(cmd *cobra.Command, _ []string, flags *schemaApplyFlags) er
 		if err != nil {
 			return err
 		}
-		if len(envs) != 1 {
-			return fmt.Errorf("multi-environment %q is not supported", GlobalFlags.SelectedEnv)
+		if len(envs) == 0 {
+			return fmt.Errorf("environment %q expanded to no targets", GlobalFlags.SelectedEnv)
+		}
+		if len(envs) > 1 {
+			return fanoutRun(cmd, *flags, envs, *fanout)
+		}
+		if fanout != nil && (len(fanout.allowRisk) > 0 || fanout.report != "" || fanout.retryReport != "") {
+			return errors.New("fan-out-only flags require an environment that expands to multiple targets")
 		}
 		if err := setSchemaEnvFlags(cmd, envs[0]); err != nil {
 			return err

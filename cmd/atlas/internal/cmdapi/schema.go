@@ -83,8 +83,9 @@ func (f *schemaApplyFlags) check(env *Env) error {
 // schemaApplyCmd represents the 'atlas schema apply' subcommand.
 func schemaApplyCmd() *cobra.Command {
 	var (
-		flags schemaApplyFlags
-		cmd   = &cobra.Command{
+		flags  schemaApplyFlags
+		fanout fanoutFlags
+		cmd    = &cobra.Command{
 			Use:   "apply",
 			Short: "Apply an atlas schema to a target database.",
 			// Use 80-columns as max width.
@@ -107,7 +108,7 @@ migration.`,
   atlas schema apply --env local --dev-url "docker://postgres/15/dev?search_path=public" --dry-run
   atlas schema apply -u "sqlite://file.db" --to "file://schema.sql" --dev-url "sqlite://dev?mode=memory"`,
 			RunE: RunE(func(cmd *cobra.Command, args []string) error {
-				return schemaApplyRunE(cmd, args, &flags)
+				return schemaApplyRunEWithFanout(cmd, args, &flags, &fanout)
 			}),
 		}
 	)
@@ -120,6 +121,7 @@ migration.`,
 	addFlagDevURL(cmd.Flags(), &flags.devURL)
 	addFlagDryRun(cmd.Flags(), &flags.dryRun)
 	addFlagAutoApprove(cmd.Flags(), &flags.autoApprove)
+	addFanoutFlags(cmd, &fanout)
 	addFlagLog(cmd.Flags(), &flags.logFormat)
 	addFlagFormat(cmd.Flags(), &flags.logFormat)
 	cmd.Flags().StringVarP(&flags.txMode, flagTxMode, "", txModeFile, "set transaction mode [none, file]")
@@ -471,6 +473,11 @@ func computeDiff(ctx context.Context, differ *sqlclient.Client, from, to *cmdext
 	default:
 		// SchemaDiff checks for name equality which is irrelevant in the case
 		// the user wants to compare their contents, reset them to allow the comparison.
+		fromName, toName := current.Schemas[0].Name, desired.Schemas[0].Name
+		defer func() {
+			current.Schemas[0].Name = fromName
+			desired.Schemas[0].Name = toName
+		}()
 		current.Schemas[0].Name, desired.Schemas[0].Name = "", ""
 		changes, err = differ.SchemaDiff(current.Schemas[0], desired.Schemas[0], opts...)
 		if err != nil {
