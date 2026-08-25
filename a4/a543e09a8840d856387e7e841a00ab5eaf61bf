@@ -1,0 +1,18 @@
+docs/plans/tidb-foreign-key-diff.md
+  h_ea91e2db23540f 1-119
+internal/integration/tidb_test.go
+  h_ea91e2db23540f 12,412-503
+sql/mysql/inspect.go
+  h_ea91e2db23540f 783-784
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "a4a543e09a8840d856387e7e841a00ab5eaf61bf",
+  "prompts": {},
+  "humans": {
+    "h_ea91e2db23540f": {
+      "author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}
