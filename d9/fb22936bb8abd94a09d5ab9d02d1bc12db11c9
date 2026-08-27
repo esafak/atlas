@@ -1,0 +1,33 @@
+.github/workflows/cd-docker-push-cockroach_oss.yaml
+  s_33917f0f9aaf32::t_fdc196af97da24 8,33
+.github/workflows/ci-dialect_oss.yaml
+  s_82f5446fcf4654::t_e150fa047f5f64 416-418,429-430
+internal/ci/jobs_oss.go
+  s_33917f0f9aaf32::t_13e23c5431a243 25,29-34,37,39
+internal/integration/docker-compose.yaml
+  s_33917f0f9aaf32::t_24db2bf942729e 180-181,183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "d9fb22936bb8abd94a09d5ab9d02d1bc12db11c9",
+  "prompts": {},
+  "sessions": {
+    "s_33917f0f9aaf32": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fbacc0160ffeZZRA6dt2Hm4726",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    },
+    "s_82f5446fcf4654": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fbae0a069ffepH3bUEr3rQDd5S",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}
