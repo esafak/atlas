@@ -1,12 +1,11 @@
 name: CD - Build Docker - Cockroach - Community Edition
 on:
-  pull_request:
   push:
     branches:
       - master
 
 env:
-  CRDB_VERSIONS: v21.2.11 v22.1.0
+  CRDB_VERSIONS: v22.1.0 v25.1.1
 
 jobs:
   build-services:
