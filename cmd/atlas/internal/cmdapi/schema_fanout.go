@@ -50,6 +50,7 @@ type fanoutFlags struct {
 	noTenantFanout           bool
 	contractDescriptor       string
 	retryOf                  string
+	newEvidenceRun           bool
 	originalCohort           string
 	originalApprovedTargets  []string
 	originalFailedTargets    []string
@@ -82,10 +83,14 @@ type fanoutPlan struct {
 }
 
 type fanoutReport struct {
-	Version string       `json:"version"`
-	Cohort  string       `json:"cohort"`
-	RunID   string       `json:"run_id,omitempty"`
-	Plans   []fanoutPlan `json:"plans"`
+	Version                 string       `json:"version"`
+	Cohort                  string       `json:"cohort"`
+	RunID                   string       `json:"run_id,omitempty"`
+	RetryOf                 string       `json:"retry_of,omitempty"`
+	OriginalCohort          string       `json:"original_cohort,omitempty"`
+	OriginalApprovedTargets []string     `json:"original_approved_targets,omitempty"`
+	OriginalFailedTargets   []string     `json:"original_failed_targets,omitempty"`
+	Plans                   []fanoutPlan `json:"plans"`
 }
 
 func addFanoutFlags(cmd *cobra.Command, f *fanoutFlags) {
@@ -369,7 +374,7 @@ func fanoutRun(cmd *cobra.Command, flags schemaApplyFlags, envs []*Env, ff fanou
 		}
 		return r
 	}(), "\n")))
-	report := fanoutReport{Version: "atlas.schema.apply.fanout/v1", Cohort: hex.EncodeToString(cohort[:]), Plans: plans}
+	report := fanoutReport{Version: "atlas.schema.apply.fanout/v1", Cohort: hex.EncodeToString(cohort[:]), RetryOf: ff.retryOf, OriginalCohort: ff.originalCohort, OriginalApprovedTargets: append([]string(nil), ff.originalApprovedTargets...), OriginalFailedTargets: append([]string(nil), ff.originalFailedTargets...), Plans: plans}
 	if ff.report != "" {
 		runID, err := newRunID()
 		if err != nil {
@@ -383,7 +388,7 @@ func fanoutRun(cmd *cobra.Command, flags schemaApplyFlags, envs []*Env, ff fanou
 		}
 		closeFanoutPlans(plans)
 		if ff.report != "" {
-			if err := writeFanoutReport(ff.report, fanoutReport{Version: report.Version, Cohort: report.Cohort, RunID: report.RunID, Plans: plans}); err != nil {
+			if err := writeFanoutReport(ff.report, fanoutReport{Version: report.Version, Cohort: report.Cohort, RunID: report.RunID, RetryOf: report.RetryOf, OriginalCohort: report.OriginalCohort, OriginalApprovedTargets: report.OriginalApprovedTargets, OriginalFailedTargets: report.OriginalFailedTargets, Plans: plans}); err != nil {
 				return fmt.Errorf("write canceled fan-out report: %w", err)
 			}
 		}
@@ -514,7 +519,7 @@ func fanoutRun(cmd *cobra.Command, flags schemaApplyFlags, envs []*Env, ff fanou
 	}
 	closeFanoutPlans(plans)
 	if ff.report != "" {
-		if err := writeFanoutReport(ff.report, fanoutReport{Version: report.Version, Cohort: report.Cohort, RunID: report.RunID, Plans: plans}); err != nil {
+		if err := writeFanoutReport(ff.report, fanoutReport{Version: report.Version, Cohort: report.Cohort, RunID: report.RunID, RetryOf: report.RetryOf, OriginalCohort: report.OriginalCohort, OriginalApprovedTargets: report.OriginalApprovedTargets, OriginalFailedTargets: report.OriginalFailedTargets, Plans: plans}); err != nil {
 			return fmt.Errorf("write fan-out report: %w", err)
 		}
 	}
