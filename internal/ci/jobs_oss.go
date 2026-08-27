@@ -34,9 +34,8 @@ func init() {
 		},
 		Job{
 			Version: "cockroach",
-			Image:   "cockroachdb/cockroach:v25.1.1",
+			Image:   "ghcr.io/ariga/cockroachdb-single-node:v22.1.0",
 			Regex:   "Cockroach",
-			Env:     []string{"COCKROACH_ARGS: start-single-node --insecure"},
 			Ports:   []string{"26257:26257"},
 		},
 	)
