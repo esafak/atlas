@@ -34,9 +34,25 @@ import (
 const fanoutSummaryLimit = 100
 
 type fanoutFlags struct {
-	allowRisk   []string
-	report      string
-	retryReport string
+	allowRisk                []string
+	report                   string
+	retryReport              string
+	evidenceDir              string
+	releaseImageDigest       string
+	contractDigest           string
+	contractVersion          int
+	globalArtifactDigest     string
+	tenantArtifactDigest     string
+	normalizedSchemaIdentity string
+	currentSchemaIdentity    string
+	atlasGeneration          int64
+	observedGeneration       int64
+	noTenantFanout           bool
+	contractDescriptor       string
+	retryOf                  string
+	originalCohort           string
+	originalApprovedTargets  []string
+	originalFailedTargets    []string
 }
 
 type fanoutPlan struct {
@@ -68,6 +84,7 @@ type fanoutPlan struct {
 type fanoutReport struct {
 	Version string       `json:"version"`
 	Cohort  string       `json:"cohort"`
+	RunID   string       `json:"run_id,omitempty"`
 	Plans   []fanoutPlan `json:"plans"`
 }
 
@@ -75,6 +92,18 @@ func addFanoutFlags(cmd *cobra.Command, f *fanoutFlags) {
 	cmd.Flags().StringArrayVar(&f.allowRisk, "allow-risk", nil, "allow a typed risk class (repeatable)")
 	cmd.Flags().StringVar(&f.report, "report", "", "write the complete fan-out report to a local JSON file")
 	cmd.Flags().StringVar(&f.retryReport, "retry-report", "", "retry only targets recorded in a previous fan-out report")
+	cmd.Flags().StringVar(&f.evidenceDir, "evidence-dir", "", "publish redacted readiness evidence to this local immutable store")
+	cmd.Flags().StringVar(&f.releaseImageDigest, "release-image-digest", "", "immutable release image digest (required with --evidence-dir)")
+	cmd.Flags().StringVar(&f.contractDigest, "contract-digest", "", "schema contract digest (required with --evidence-dir)")
+	cmd.Flags().IntVar(&f.contractVersion, "contract-version", 0, "schema contract version (required with --evidence-dir)")
+	cmd.Flags().StringVar(&f.globalArtifactDigest, "global-artifact-digest", "", "global artifact digest for evidence")
+	cmd.Flags().StringVar(&f.tenantArtifactDigest, "tenant-artifact-digest", "", "tenant artifact digest for evidence")
+	cmd.Flags().StringVar(&f.normalizedSchemaIdentity, "normalized-schema-identity", "", "normalized Atlas schema identity")
+	cmd.Flags().StringVar(&f.currentSchemaIdentity, "current-schema-identity", "", "current Atlas schema identity")
+	cmd.Flags().Int64Var(&f.atlasGeneration, "atlas-generation", 0, "Atlas resource generation")
+	cmd.Flags().Int64Var(&f.observedGeneration, "observed-generation", 0, "Atlas observed generation")
+	cmd.Flags().BoolVar(&f.noTenantFanout, "no-tenant-fanout", false, "explicitly declare that this release requires no tenant fan-out")
+	cmd.Flags().StringVar(&f.contractDescriptor, "contract-descriptor", "", "canonical release-contract JSON used to verify --contract-digest")
 }
 
 var fanoutRiskClasses = map[string]bool{
@@ -198,6 +227,20 @@ func fanoutRun(cmd *cobra.Command, flags schemaApplyFlags, envs []*Env, ff fanou
 	if flags.logFormat != "" {
 		return errors.New("--format/--log are not supported for fan-out; use --report")
 	}
+	if ff.evidenceDir != "" {
+		if err := validateEvidenceInputs(ff); err != nil {
+			return err
+		}
+		if ff.contractDescriptor == "" {
+			return errors.New("--evidence-dir requires --contract-descriptor")
+		}
+		if ff.report == "" {
+			return errors.New("--evidence-dir requires --report so the completed fan-out is retained")
+		}
+		if flags.dryRun {
+			return errors.New("--evidence-dir requires a completed apply; use --report for planning")
+		}
+	}
 	if flags.autoApprove && len(ff.allowRisk) > 0 {
 		return errors.New("--auto-approve cannot be combined with --allow-risk")
 	}
@@ -228,12 +271,20 @@ func fanoutRun(cmd *cobra.Command, flags schemaApplyFlags, envs []*Env, ff fanou
 		}
 		retry = make(map[string]retryBinding, len(previous.Plans))
 		for _, p := range previous.Plans {
-			if p.Status == "" || p.Status == "planned" || p.Status == "failed" || p.Status == "drifted" {
+			if p.Status == "" || p.Status == "planned" || p.Status == "failed" || p.Status == "drifted" || p.Status == "canceled" || p.Status == "cancelled" {
 				retry[p.Target] = retryBinding{planHash: p.PlanHash, artifactHash: p.ArtifactHash, drifted: p.Status == "drifted"}
 			}
 		}
 		if len(retry) == 0 {
 			return errors.New("retry report contains no failed or drifted targets")
+		}
+		ff.originalCohort = previous.Cohort
+		ff.retryOf = previous.RunID
+		for _, p := range previous.Plans {
+			ff.originalApprovedTargets = append(ff.originalApprovedTargets, p.Target)
+			if p.Status == "failed" || p.Status == "drifted" || p.Status == "canceled" || p.Status == "cancelled" {
+				ff.originalFailedTargets = append(ff.originalFailedTargets, p.Target)
+			}
 		}
 	}
 	plans := make([]fanoutPlan, 0, len(envs))
@@ -320,6 +371,36 @@ func fanoutRun(cmd *cobra.Command, flags schemaApplyFlags, envs []*Env, ff fanou
 	}(), "\n")))
 	report := fanoutReport{Version: "atlas.schema.apply.fanout/v1", Cohort: hex.EncodeToString(cohort[:]), Plans: plans}
 	if ff.report != "" {
+		runID, err := newRunID()
+		if err != nil {
+			return err
+		}
+		report.RunID = runID
+	}
+	finishCanceled := func(reason string) error {
+		for i := range plans {
+			plans[i].Status, plans[i].Error = "canceled", reason
+		}
+		closeFanoutPlans(plans)
+		if ff.report != "" {
+			if err := writeFanoutReport(ff.report, fanoutReport{Version: report.Version, Cohort: report.Cohort, RunID: report.RunID, Plans: plans}); err != nil {
+				return fmt.Errorf("write canceled fan-out report: %w", err)
+			}
+		}
+		if ff.evidenceDir != "" {
+			e, err := evidenceFromFanout(ff, report, plans)
+			if err != nil {
+				return err
+			}
+			path, err := (FileEvidenceStore{Root: ff.evidenceDir}).Publish(context.Background(), e)
+			if err != nil {
+				return fmt.Errorf("publish canceled evidence: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Evidence: %s\n", path)
+		}
+		return nil
+	}
+	if ff.report != "" {
 		if err := writeFanoutReport(ff.report, report); err != nil {
 			return err
 		}
@@ -338,8 +419,7 @@ func fanoutRun(cmd *cobra.Command, flags schemaApplyFlags, envs []*Env, ff fanou
 		return nil
 	}
 	if !flags.autoApprove && !promptUser(cmd) {
-		closeFanoutPlans(plans)
-		return nil
+		return finishCanceled("batch approval declined")
 	}
 	hasRisk := false
 	for _, p := range plans {
@@ -349,7 +429,9 @@ func fanoutRun(cmd *cobra.Command, flags schemaApplyFlags, envs []*Env, ff fanou
 		}
 	}
 	if hasRisk && len(ff.allowRisk) > 0 && !promptUser(cmd) {
-		closeFanoutPlans(plans)
+		if err := finishCanceled("risk confirmation aborted"); err != nil {
+			return err
+		}
 		return AbortErrorf("risk confirmation aborted")
 	}
 	var failed []string
@@ -432,7 +514,7 @@ func fanoutRun(cmd *cobra.Command, flags schemaApplyFlags, envs []*Env, ff fanou
 	}
 	closeFanoutPlans(plans)
 	if ff.report != "" {
-		if err := writeFanoutReport(ff.report, fanoutReport{Version: report.Version, Cohort: report.Cohort, Plans: plans}); err != nil {
+		if err := writeFanoutReport(ff.report, fanoutReport{Version: report.Version, Cohort: report.Cohort, RunID: report.RunID, Plans: plans}); err != nil {
 			return fmt.Errorf("write fan-out report: %w", err)
 		}
 	}
@@ -445,8 +527,29 @@ func fanoutRun(cmd *cobra.Command, flags schemaApplyFlags, envs []*Env, ff fanou
 	if warnings > 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "Fan-out completed with %d warning(s); see the report for details.\n", warnings)
 	}
+	var runErr error
 	if len(failed) > 0 {
-		return fmt.Errorf("fan-out failed targets: %s", strings.Join(failed, ", "))
+		runErr = fmt.Errorf("fan-out failed targets: %s", strings.Join(failed, ", "))
+	}
+	if ff.evidenceDir != "" {
+		// Publication is deliberately after the final unlock and report write. A
+		// failed/partial/cancelled run is still recorded, but can never validate
+		// as successful evidence.
+		e, err := evidenceFromFanout(ff, report, plans)
+		if err != nil {
+			return errors.Join(runErr, err)
+		}
+		store := FileEvidenceStore{Root: ff.evidenceDir}
+		// Preserve a cancellation record even though the operation context is
+		// cancelled; publication itself is local and bounded by the filesystem.
+		path, err := store.Publish(context.Background(), e)
+		if err != nil {
+			return errors.Join(runErr, fmt.Errorf("publish evidence: %w", err))
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Evidence: %s\n", path)
+	}
+	if runErr != nil {
+		return runErr
 	}
 	return nil
 }

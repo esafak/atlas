@@ -635,6 +635,7 @@ func init() {
 		schemaCleanCmd(),
 		schemaDiffCmd(),
 		schemaFmtCmd(),
+		schemaEvidenceCmd(),
 		schemaInspectCmd(),
 		unsupportedCommand("schema", "test"),
 		unsupportedCommand("schema", "plan"),
@@ -923,6 +924,9 @@ func schemaApplyRunEWithFanout(cmd *cobra.Command, _ []string, flags *schemaAppl
 	case len(flags.include) > 0:
 		return AbortErrorf("%s", unsupportedMessage("schema", "apply --include"))
 	case GlobalFlags.SelectedEnv == "":
+		if fanout != nil && (fanout.evidenceDir != "" || fanout.releaseImageDigest != "" || fanout.contractDigest != "" || fanout.contractDescriptor != "") {
+			return errors.New("evidence flags require a named multi-target environment")
+		}
 		env, err := selectEnv(cmd)
 		if err != nil {
 			return err
@@ -941,6 +945,9 @@ func schemaApplyRunEWithFanout(cmd *cobra.Command, _ []string, flags *schemaAppl
 		}
 		if fanout != nil && (len(fanout.allowRisk) > 0 || fanout.report != "" || fanout.retryReport != "") {
 			return errors.New("fan-out-only flags require an environment that expands to multiple targets")
+		}
+		if fanout != nil && fanout.evidenceDir != "" {
+			return errors.New("evidence publication requires an environment that expands to multiple targets")
 		}
 		if err := setSchemaEnvFlags(cmd, envs[0]); err != nil {
 			return err
