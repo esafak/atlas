@@ -46,3 +46,42 @@ TiDB versions where `GET_LOCK` is unsupported or behaves as a no-op use
 fingerprint revalidation as the fallback guard. This does not exclude external
 writers; operators must stop writers that do not participate in the Atlas lock
 protocol and treat the post-plan race as residual risk.
+
+## Readiness evidence
+
+The approved canary fan-out may publish a redacted, versioned result after the
+final report is written and every target has completed:
+
+```text
+atlas schema apply --env tenants --auto-approve --report fanout.json \
+  --evidence-dir /path/to/evidence \
+  --contract-descriptor /path/to/kargo-atlas-release-contract.json \
+  --release-image-digest sha256:<64 lowercase hex> \
+  --contract-digest sha256:<64 lowercase hex> --contract-version 1 \
+  --global-artifact-digest <64 lowercase hex> \
+  --tenant-artifact-digest <64 lowercase hex> \
+  --normalized-schema-identity <opaque identity>
+```
+
+The evidence directory is a local write-once store intended to be exported to
+the read-only verifier. It is keyed by the release/contract identity and cohort;
+each invocation receives a fresh run ID. It contains no URLs, credentials, or
+SQL. Failed, drifted, and cancelled batches are recorded as non-success terminal
+states and never become readiness evidence. Inspect a record without applying
+anything with:
+
+```text
+atlas schema evidence inspect --evidence-dir /path/to/evidence --run-id <run-id>
+```
+
+If applying and publishing must be separate, `atlas schema evidence publish`
+accepts only a completed report and never approves or applies changes; it uses
+the same identity, descriptor, artifact, and Atlas-status flags shown above.
+
+Expired records can be removed while protecting records referenced by pending
+promotions:
+
+```text
+atlas schema evidence cleanup --evidence-dir /path/to/evidence \
+  --protected-run-id <run-id>
+```
