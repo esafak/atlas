@@ -37,8 +37,15 @@ jobs:
         env:
           ATLAS_DEBUG: "true"
       - name: Run tests
-        run: go test -race ./...
+        run: |
+          if [ -n "$ATLAS_TOKEN" ]; then
+            go test -race ./...
+          else
+            go test -race -skip 'TestAtlasMigrate_Lint/(lint_error_parsing|lint_with_manually_parsing_output|lint_uses_--base_and_--latest)|TestMigrate_Diff' ./...
+          fi
         working-directory: ${{ matrix.module }}
+        env:
+          ATLAS_TOKEN: ${{ secrets.ATLAS_TOKEN }}
   
   e2e-tests:
     runs-on: ubuntu-latest
@@ -65,9 +72,15 @@ jobs:
         env:
           ATLAS_DEBUG: "true"
       - name: Run e2e tests
-        run: go test ./internal/e2e
+        run: |
+          if [ -n "$ATLAS_TOKEN" ]; then
+            go test ./internal/e2e
+          else
+            go test -skip 'Test_SchemaPlan' ./internal/e2e
+          fi
         working-directory: atlasexec
         env:
+          ATLAS_TOKEN: ${{ secrets.ATLAS_TOKEN }}
           ATLASEXEC_E2ETEST: "1"
           ATLASEXEC_E2ETEST_ATLAS_PATH: atlas
           ATLASEXEC_E2ETEST_POSTGRES_URL: "postgres://postgres:pass@localhost:5432/postgres?search_path=public&sslmode=disable"

@@ -22,14 +22,21 @@ func init() {
 		},
 		Job{
 			Version: "tidb6",
-			Image:   "pingcap/tidb:v6.0.0",
+			Image:   "pingcap/tidb:v6.6.0",
 			Regex:   "TiDB",
 			Ports:   []string{"4310:4000"},
 		},
 		Job{
+			Version: "tidb8",
+			Image:   "pingcap/tidb:v8.5.3",
+			Regex:   "TiDB",
+			Ports:   []string{"4311:4000"},
+		},
+		Job{
 			Version: "cockroach",
-			Image:   "ghcr.io/ariga/cockroachdb-single-node:v21.2.11",
+			Image:   "cockroachdb/cockroach:v25.1.1",
 			Regex:   "Cockroach",
+			Env:     []string{"COCKROACH_ARGS: start-single-node --insecure"},
 			Ports:   []string{"26257:26257"},
 		},
 	)
