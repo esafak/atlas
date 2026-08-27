@@ -32,6 +32,7 @@ const evidenceVersion = 1
 
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 var redactedTargetPattern = regexp.MustCompile(`^target-[0-9a-f]{12}$`)
+var opaqueIdentityPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
 
 type AtlasEvidence struct {
 	ContractVersion          int               `json:"contract_version"`
@@ -117,6 +118,13 @@ func schemaEvidenceCmd() *cobra.Command {
 		if report.RunID == "" {
 			return errors.New("completed fan-out report is missing run id")
 		}
+		if report.RetryOf != "" {
+			f.originalCohort = report.OriginalCohort
+			f.originalApprovedTargets = append([]string(nil), report.OriginalApprovedTargets...)
+			f.originalFailedTargets = append([]string(nil), report.OriginalFailedTargets...)
+			f.retryOf = report.RetryOf
+		}
+		f.newEvidenceRun = true
 		for _, p := range report.Plans {
 			if p.Status == "" || p.Status == "planned" {
 				return errors.New("cannot publish evidence from an incomplete fan-out report")
@@ -214,7 +222,7 @@ func newRunID() (string, error) {
 
 func evidenceFromFanout(f fanoutFlags, report fanoutReport, plans []fanoutPlan) (AtlasEvidence, error) {
 	run := report.RunID
-	if run == "" {
+	if f.newEvidenceRun || run == "" {
 		var err error
 		run, err = newRunID()
 		if err != nil {
@@ -308,31 +316,9 @@ func (s FileEvidenceStore) Publish(ctx context.Context, e AtlasEvidence) (string
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
-	// The lock makes the write-once operation safe for concurrent publishers;
-	// run IDs ensure retries never replace an earlier attempt.
-	lock := filepath.Join(dir, ".publish.lock")
-	var f *os.File
-	var err error
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	for {
-		f, err = os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return "", fmt.Errorf("evidence publication: %w", err)
-		}
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-deadline.C:
-			return "", errors.New("evidence publication timeout")
-		case <-time.After(time.Millisecond):
-		}
-	}
-	f.Close()
-	defer os.Remove(lock)
+	// The final hard links provide write-once publication. Each publisher uses a
+	// unique temporary name and a unique run ID, while a duplicate run ID fails
+	// at the destination link.
 	b, err := json.MarshalIndent(e, "", "  ")
 	if err != nil {
 		return "", err
@@ -387,7 +373,7 @@ func (s FileEvidenceStore) Publish(ctx context.Context, e AtlasEvidence) (string
 }
 
 func validateEvidence(e AtlasEvidence) error {
-	if e.ContractVersion != evidenceVersion || e.RunID == "" || strings.ContainsAny(e.RunID, `/\\`) {
+	if e.ContractVersion != evidenceVersion || !opaqueIdentityPattern.MatchString(e.RunID) {
 		return errors.New("invalid evidence identity")
 	}
 	if !digestPattern.MatchString(e.Identity.ImageDigest) || !digestPattern.MatchString(e.Identity.ContractDigest) || e.Identity.Environment != "canary" || e.Identity.CohortID == "" {
@@ -417,8 +403,8 @@ func validateEvidence(e AtlasEvidence) error {
 	}
 	// These values are opaque identities. Rejecting connection strings and SQL
 	// here makes accidental leakage fail closed even if a caller is changed.
-	for _, value := range []string{e.NormalizedSchemaIdentity, e.CurrentSchemaIdentity, e.Identity.CohortID, e.Cohort.ID} {
-		if strings.Contains(value, "://") || strings.ContainsAny(value, "\r\n") || strings.Contains(strings.ToUpper(value), "SELECT ") || strings.Contains(strings.ToUpper(value), "CREATE ") || strings.Contains(strings.ToUpper(value), "ALTER ") {
+	for _, value := range []string{e.NormalizedSchemaIdentity, e.CurrentSchemaIdentity, e.Identity.CohortID, e.Cohort.ID, e.RetryOf} {
+		if value != "" && !opaqueIdentityPattern.MatchString(value) {
 			return errors.New("evidence contains unredacted sensitive identity")
 		}
 	}
@@ -437,7 +423,7 @@ func isArtifactDigest(value string) bool {
 }
 
 func (s FileEvidenceStore) Inspect(runID string) (AtlasEvidence, error) {
-	if runID == "" || strings.ContainsAny(runID, `/\\`) {
+	if !opaqueIdentityPattern.MatchString(runID) {
 		return AtlasEvidence{}, errors.New("invalid run id")
 	}
 	var found string
@@ -446,8 +432,10 @@ func (s FileEvidenceStore) Inspect(runID string) (AtlasEvidence, error) {
 			return err
 		}
 		if !d.IsDir() && d.Name() == runID+".json" {
+			if found != "" {
+				return fmt.Errorf("evidence run id %q is ambiguous", runID)
+			}
 			found = path
-			return filepath.SkipDir
 		}
 		return nil
 	})
@@ -487,10 +475,10 @@ func (s FileEvidenceStore) Cleanup(ctx context.Context, now time.Time, protected
 		var e AtlasEvidence
 		b, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			return nil
 		}
 		if err = json.Unmarshal(b, &e); err != nil {
-			return err
+			return nil
 		}
 		if !now.Before(e.ExpiresAt) {
 			if err = os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {

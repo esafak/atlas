@@ -64,6 +64,20 @@ func TestEvidenceEmptyNoFanoutUsesJSONArrays(t *testing.T) {
 	require.Contains(t, string(b), `"failed_targets":[]`)
 }
 
+func TestEvidenceSeparatedRetryPreservesOriginalCohort(t *testing.T) {
+	f := evidenceFlagsForTest(t.TempDir())
+	f.newEvidenceRun = true
+	f.retryOf = "original-run"
+	f.originalCohort = "original-cohort"
+	f.originalApprovedTargets = []string{"target-aaaaaaaaaaaa", "target-bbbbbbbbbbbb", "target-cccccccccccc"}
+	f.originalFailedTargets = []string{"target-cccccccccccc"}
+	e, err := evidenceFromFanout(f, fanoutReport{Cohort: "retry-subset", RunID: "retry-report", RetryOf: "original-run", OriginalCohort: "original-cohort"}, []fanoutPlan{{Target: "target-cccccccccccc", Status: "success"}})
+	require.NoError(t, err)
+	require.Equal(t, "original-cohort", e.Identity.CohortID)
+	require.Equal(t, 3, e.TenantResultCounts.Eligible)
+	require.Equal(t, 3, e.TenantResultCounts.Succeeded)
+}
+
 func TestEvidenceConcurrentPublication(t *testing.T) {
 	dir := t.TempDir()
 	store := FileEvidenceStore{Root: dir}
@@ -101,6 +115,10 @@ func TestEvidenceRejectsUnredactedValues(t *testing.T) {
 	e, err = evidenceFromFanout(f, fanoutReport{Cohort: "safe"}, []fanoutPlan{{Target: "target-abcdef123456", Status: "success"}})
 	require.NoError(t, err)
 	e.NormalizedSchemaIdentity = "SELECT password FROM users"
+	_, err = (FileEvidenceStore{Root: f.evidenceDir}).Publish(context.Background(), e)
+	require.Error(t, err)
+
+	e.NormalizedSchemaIdentity = "password=secret"
 	_, err = (FileEvidenceStore{Root: f.evidenceDir}).Publish(context.Background(), e)
 	require.Error(t, err)
 }
