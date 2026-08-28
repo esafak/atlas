@@ -411,20 +411,22 @@ jobs:
         run: go test -race -count=2 -v -run="TiDB" -version="tidb8" -timeout 15m ./...
   integration-cockroach:
     runs-on: ubuntu-latest
-    services:
-      cockroach:
-        image: cockroachdb/cockroach:v24.3.36
-        env:
-          COCKROACH_ARGS: start-single-node --insecure
-        ports:
-          - 26257:26257
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: cmd/atlas/go.mod
+      - name: Start CockroachDB
+        run: |
+          docker run --detach --rm --name atlas-cockroach --publish 26257:26257 cockroachdb/cockroach:v22.1.0 start-single-node --insecure
+          for i in $(seq 1 60); do
+          if docker exec atlas-cockroach /cockroach/cockroach sql --insecure --execute "SELECT 1" >/dev/null 2>&1; then
+          exit 0
+          fi
+          sleep 1
+          done
+          docker logs atlas-cockroach
+          exit 1
       - name: Run integration tests for cockroach
         working-directory: internal/integration
         run: go test -race -count=2 -v -run="Cockroach" -version="cockroach" -timeout 15m ./...
-        env:
-          COCKROACH_ARGS: start-single-node --insecure

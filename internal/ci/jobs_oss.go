@@ -34,10 +34,19 @@ func init() {
 		},
 		Job{
 			Version: "cockroach",
-			Image:   "cockroachdb/cockroach:v24.3.36",
 			Regex:   "Cockroach",
-			Env:     []string{"COCKROACH_ARGS: start-single-node --insecure"},
-			Ports:   []string{"26257:26257"},
+			Steps: []Step{{
+				Name: "Start CockroachDB",
+				Run: `docker run --detach --rm --name atlas-cockroach --publish 26257:26257 cockroachdb/cockroach:v22.1.0 start-single-node --insecure
+				for i in $(seq 1 60); do
+					if docker exec atlas-cockroach /cockroach/cockroach sql --insecure --execute "SELECT 1" >/dev/null 2>&1; then
+						exit 0
+					fi
+					sleep 1
+				done
+				docker logs atlas-cockroach
+				exit 1`,
+			}},
 		},
 	)
 }
