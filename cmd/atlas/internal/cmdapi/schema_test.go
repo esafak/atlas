@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"ariga.io/atlas/cmd/atlas/internal/cmdext"
 	"ariga.io/atlas/cmd/atlas/internal/cmdlog"
 	"ariga.io/atlas/sql/migrate"
 	"ariga.io/atlas/sql/schema"
@@ -749,6 +750,22 @@ func TestSchema_ApplyLog(t *testing.T) {
 		require.Equal(t, out.Pending[0], out.Error.Stmt)
 		require.Contains(t, out.Error.Text, `UNIQUE constraint failed: t2.id`)
 	})
+}
+
+func TestComputeDiffScopedPreservesRealmNames(t *testing.T) {
+	client, err := sqlclient.Open(context.Background(), openSQLite(t, ""))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	from, to := &schema.Realm{Schemas: []*schema.Schema{schema.New("tenant_a")}}, &schema.Realm{Schemas: []*schema.Schema{schema.New("tenant_b").AddTables(&schema.Table{Name: "users"})}}
+	d, err := computeDiff(
+		context.Background(), client,
+		&cmdext.StateReadCloser{StateReader: migrate.Realm(from), Schema: "tenant_a"},
+		&cmdext.StateReadCloser{StateReader: migrate.Realm(to), Schema: "tenant_b"},
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, d.changes)
+	require.Equal(t, "tenant_a", d.from.Schemas[0].Name)
+	require.Equal(t, "tenant_b", d.to.Schemas[0].Name)
 }
 
 func TestSchema_ApplySchemaMismatch(t *testing.T) {

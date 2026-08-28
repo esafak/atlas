@@ -478,8 +478,8 @@ func fingerprintDrift(p *fanoutPlan, current, desired *schema.Realm, artifact st
 }
 
 // scopedRealmHash ignores the database name when a target URL points at one
-// schema. SchemaDiff clears that name so its planned changes render correctly,
-// while a later re-inspection returns it from the database connection.
+// schema. Scoped diffs compare name-cleared schema copies, while a later
+// re-inspection returns the schema name from the database connection.
 func scopedRealmHash(r *schema.Realm, targetSchema string) string {
 	if targetSchema == "" || len(r.Schemas) != 1 {
 		return realmHash(r)

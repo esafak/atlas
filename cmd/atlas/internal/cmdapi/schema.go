@@ -473,10 +473,12 @@ func computeDiff(ctx context.Context, differ *sqlclient.Client, from, to *cmdext
 	default:
 		// SchemaDiff checks for name equality which is irrelevant in the case
 		// the user wants to compare their contents, reset them to allow the comparison.
-		// Keep the names empty after diffing as well. Changes retain references to
-		// these schemas and are rendered after this function returns.
-		current.Schemas[0].Name, desired.Schemas[0].Name = "", ""
-		changes, err = differ.SchemaDiff(current.Schemas[0], desired.Schemas[0], opts...)
+		// Use copies so the names remain available to custom output formats. Changes
+		// retain references to the schemas passed to SchemaDiff and are rendered
+		// after this function returns.
+		currentSchema, desiredSchema := *current.Schemas[0], *desired.Schemas[0]
+		currentSchema.Name, desiredSchema.Name = "", ""
+		changes, err = differ.SchemaDiff(&currentSchema, &desiredSchema, opts...)
 		if err != nil {
 			return nil, err
 		}
