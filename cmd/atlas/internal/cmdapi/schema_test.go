@@ -756,7 +756,14 @@ func TestComputeDiffScopedPreservesRealmNames(t *testing.T) {
 	client, err := sqlclient.Open(context.Background(), openSQLite(t, ""))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
-	from, to := &schema.Realm{Schemas: []*schema.Schema{schema.New("tenant_a")}}, &schema.Realm{Schemas: []*schema.Schema{schema.New("tenant_b").AddTables(&schema.Table{Name: "users"})}}
+	fromSchema := schema.New("tenant_a")
+	toSchema := schema.New("tenant_b")
+	toSchema.AddTables(
+		schema.NewTable("users").AddColumns(
+			schema.NewColumn("status").SetType(&schema.EnumType{T: "status", Schema: toSchema}),
+		),
+	)
+	from, to := &schema.Realm{Schemas: []*schema.Schema{fromSchema}}, &schema.Realm{Schemas: []*schema.Schema{toSchema}}
 	d, err := computeDiff(
 		context.Background(), client,
 		&cmdext.StateReadCloser{StateReader: migrate.Realm(from), Schema: "tenant_a"},
@@ -766,6 +773,24 @@ func TestComputeDiffScopedPreservesRealmNames(t *testing.T) {
 	require.NotEmpty(t, d.changes)
 	require.Equal(t, "tenant_a", d.from.Schemas[0].Name)
 	require.Equal(t, "tenant_b", d.to.Schemas[0].Name)
+	var foundAddTable bool
+	for _, change := range d.changes {
+		if change, ok := change.(*schema.AddTable); ok {
+			foundAddTable = true
+			require.Empty(t, change.T.Schema.Name)
+			enum, ok := change.T.Columns[0].Type.Type.(*schema.EnumType)
+			require.True(t, ok)
+			require.Empty(t, enum.Schema.Name)
+		}
+	}
+	require.True(t, foundAddTable)
+}
+
+func TestRestoreScopedSchemaChangeNames(t *testing.T) {
+	target := schema.New("tenant")
+	change := &schema.ModifySchema{S: schema.New("")}
+	restoreScopedSchemaChangeNames([]schema.Change{change}, target)
+	require.Same(t, target, change.S)
 }
 
 func TestSchema_ApplySchemaMismatch(t *testing.T) {
