@@ -571,9 +571,9 @@ func TestFanoutRiskClasses(t *testing.T) {
 
 func TestFanoutArtifactHashBindsNonFileSources(t *testing.T) {
 	r := schema.NewRealm(schema.New("main"))
-	a, err := desiredArtifactHash([]string{"mysql://localhost/a"}, r)
+	a, err := desiredArtifactHash([]string{"mysql://localhost/a"}, r, "")
 	require.NoError(t, err)
-	b, err := desiredArtifactHash([]string{"mysql://localhost/b"}, r)
+	b, err := desiredArtifactHash([]string{"mysql://localhost/b"}, r, "")
 	require.NoError(t, err)
 	require.NotEqual(t, a, b)
 }
@@ -585,6 +585,25 @@ func TestFanoutFingerprintDrift(t *testing.T) {
 	changed := schema.NewRealm(schema.New("main").AddTables(&schema.Table{Name: "external_writer"}))
 	require.Equal(t, "target changed after planning", fingerprintDrift(p, changed, nil, ""))
 	require.Equal(t, "desired artifact changed after planning", fingerprintDrift(p, planned, changed, "artifact"))
+}
+
+func TestFanoutFingerprintDriftScopedSchema(t *testing.T) {
+	planned := schema.NewRealm(schema.New("main"))
+	p := &fanoutPlan{CurrentHash: scopedRealmHash(planned, "tenant"), DesiredHash: scopedRealmHash(planned, "tenant"), ArtifactHash: "artifact", targetSchema: "tenant"}
+	current := schema.NewRealm(schema.New("tenant"))
+	require.Empty(t, fingerprintDrift(p, current, current, "artifact"))
+	changed := schema.NewRealm(schema.New("tenant").AddTables(&schema.Table{Name: "external_writer"}))
+	require.Equal(t, "target changed after planning", fingerprintDrift(p, changed, nil, ""))
+}
+
+func TestFanoutArtifactHashScopedSchema(t *testing.T) {
+	planned := schema.NewRealm(schema.New("main"))
+	observed := schema.NewRealm(schema.New("tenant"))
+	a, err := desiredArtifactHash([]string{"mysql://localhost/source"}, planned, "tenant")
+	require.NoError(t, err)
+	b, err := desiredArtifactHash([]string{"mysql://localhost/source"}, observed, "tenant")
+	require.NoError(t, err)
+	require.Equal(t, a, b)
 }
 
 func TestSchema_ApplyFanoutPartialFailure(t *testing.T) {
