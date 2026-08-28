@@ -60,6 +60,7 @@ type fanoutPlan struct {
 	schemas       []string          `json:"-"`
 	exclude       []string          `json:"-"`
 	include       []string          `json:"-"`
+	targetSchema  string            `json:"-"`
 	lockName      string            `json:"-"`
 	vars          Vars              `json:"-"`
 	targetURL     string            `json:"-"`
@@ -386,7 +387,7 @@ func fanoutRun(cmd *cobra.Command, flags schemaApplyFlags, envs []*Env, ff fanou
 		if reason := fingerprintDrift(p, current, nil, ""); reason != "" {
 			_ = unlock()
 			p.Status, p.Error = "drifted", reason
-			failed = append(failed, p.Target+" (drifted; retryable)")
+			failed = append(failed, p.Target+" ("+reason+"; retryable)")
 			continue
 		}
 		desired, err := desiredRealm(cmd.Context(), p)
@@ -396,7 +397,7 @@ func fanoutRun(cmd *cobra.Command, flags schemaApplyFlags, envs []*Env, ff fanou
 			failed = append(failed, p.Target+": desired-state check: "+err.Error())
 			continue
 		}
-		artifact, err := desiredArtifactHash(p.toURLs, desired)
+		artifact, err := desiredArtifactHash(p.toURLs, desired, p.targetSchema)
 		if err != nil {
 			_ = unlock()
 			p.Status, p.Error = "failed", "artifact check: "+err.Error()
@@ -406,7 +407,7 @@ func fanoutRun(cmd *cobra.Command, flags schemaApplyFlags, envs []*Env, ff fanou
 		if reason := fingerprintDrift(p, current, desired, artifact); reason != "" {
 			_ = unlock()
 			p.Status, p.Error = "drifted", reason
-			failed = append(failed, p.Target+" (desired artifact changed; retryable)")
+			failed = append(failed, p.Target+" ("+reason+"; retryable)")
 			continue
 		}
 		if len(p.Changes) == 0 {
@@ -467,13 +468,27 @@ func acquireFanoutLock(ctx context.Context, p *fanoutPlan, timeout time.Duration
 }
 
 func fingerprintDrift(p *fanoutPlan, current, desired *schema.Realm, artifact string) string {
-	if current != nil && realmHash(current) != p.CurrentHash {
+	if current != nil && scopedRealmHash(current, p.targetSchema) != p.CurrentHash {
 		return "target changed after planning"
 	}
-	if desired != nil && (realmHash(desired) != p.DesiredHash || artifact != p.ArtifactHash) {
+	if desired != nil && (scopedRealmHash(desired, p.targetSchema) != p.DesiredHash || artifact != p.ArtifactHash) {
 		return "desired artifact changed after planning"
 	}
 	return ""
+}
+
+// scopedRealmHash ignores the database name when a target URL points at one
+// schema. SchemaDiff clears that name so its planned changes render correctly,
+// while a later re-inspection returns it from the database connection.
+func scopedRealmHash(r *schema.Realm, targetSchema string) string {
+	if targetSchema == "" || len(r.Schemas) != 1 {
+		return realmHash(r)
+	}
+	copy := *r
+	schemaCopy := *r.Schemas[0]
+	schemaCopy.Name = ""
+	copy.Schemas = []*schema.Schema{&schemaCopy}
+	return realmHash(&copy)
 }
 
 func cloneEnvWithURL(env *Env, u string) *Env {
@@ -526,7 +541,7 @@ func writeFanoutReport(path string, report fanoutReport) error {
 	return os.WriteFile(path, append(b, '\n'), 0600)
 }
 
-func desiredArtifactHash(urls []string, fallback *schema.Realm) (string, error) {
+func desiredArtifactHash(urls []string, fallback *schema.Realm, targetSchema string) (string, error) {
 	h := sha256.New()
 	for _, raw := range urls {
 		u, err := url.Parse(raw)
@@ -534,7 +549,7 @@ func desiredArtifactHash(urls []string, fallback *schema.Realm) (string, error) 
 			return "", err
 		}
 		if u.Scheme != "file" {
-			h := sha256.Sum256([]byte("atlas-artifact:" + strings.Join(urls, "\x00") + "\x00" + realmHash(fallback)))
+			h := sha256.Sum256([]byte("atlas-artifact:" + strings.Join(urls, "\x00") + "\x00" + scopedRealmHash(fallback, targetSchema)))
 			return hex.EncodeToString(h[:]), nil
 		}
 		path := filepath.Join(u.Host, u.Path)
@@ -625,14 +640,14 @@ func fanoutPlanOne(ctx context.Context, flags schemaApplyFlags, env *Env) (*fano
 	if len(pl.Changes) == 0 {
 		status = "no-op"
 	}
-	p := &fanoutPlan{Target: redactedTarget(env.URL), Environment: env.Name, Status: status, SQL: make([]string, len(pl.Changes)), Changes: d.changes, MigrationPlan: pl, client: client}
+	p := &fanoutPlan{Target: redactedTarget(env.URL), Environment: env.Name, Status: status, SQL: make([]string, len(pl.Changes)), Changes: d.changes, MigrationPlan: pl, client: client, targetSchema: from.Schema}
 	for i, c := range pl.Changes {
 		p.SQL[i] = c.Cmd
 	}
 	p.Risk = riskClasses(p.SQL)
-	p.CurrentHash = realmHash(d.from)
-	p.DesiredHash = realmHash(d.to)
-	p.ArtifactHash, err = desiredArtifactHash(flags.toURLs, d.to)
+	p.CurrentHash = scopedRealmHash(d.from, from.Schema)
+	p.DesiredHash = scopedRealmHash(d.to, from.Schema)
+	p.ArtifactHash, err = desiredArtifactHash(flags.toURLs, d.to, from.Schema)
 	if err != nil {
 		client.Close()
 		return nil, err
