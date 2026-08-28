@@ -177,10 +177,10 @@ services:
     ports:
       - "4311:4000"
   
-  cockroach24.3.36:
-    container_name: atlas-integration-cockroach24.3.36
+  cockroach22.1.0:
+    container_name: atlas-integration-cockroach22.1.0
     platform: linux/amd64
-    image: cockroachdb/cockroach:v24.3.36
+    image: cockroachdb/cockroach:v22.1.0
     ports:
       - "26257:26257"
     command: "start-single-node --insecure"
