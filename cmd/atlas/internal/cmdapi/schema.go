@@ -473,22 +473,203 @@ func computeDiff(ctx context.Context, differ *sqlclient.Client, from, to *cmdext
 	default:
 		// SchemaDiff checks for name equality which is irrelevant in the case
 		// the user wants to compare their contents, reset them to allow the comparison.
-		fromName, toName := current.Schemas[0].Name, desired.Schemas[0].Name
-		defer func() {
-			current.Schemas[0].Name = fromName
-			desired.Schemas[0].Name = toName
-		}()
-		current.Schemas[0].Name, desired.Schemas[0].Name = "", ""
-		changes, err = differ.SchemaDiff(current.Schemas[0], desired.Schemas[0], opts...)
+		// Use copies so the names remain available to custom output formats. Changes
+		// retain references to the schemas passed to SchemaDiff and are rendered
+		// after this function returns.
+		currentSchema, desiredSchema := scopedSchemaCopy(current.Schemas[0]), scopedSchemaCopy(desired.Schemas[0])
+		changes, err = differ.SchemaDiff(currentSchema, desiredSchema, opts...)
 		if err != nil {
 			return nil, err
 		}
+		// SchemaDiff uses the desired schema for ModifySchema changes. Keep its
+		// name so scoped planners can validate and render the target schema.
+		restoreScopedSchemaChangeNames(changes, current.Schemas[0])
 	}
 	return &diff{
 		changes: changes,
 		from:    current,
 		to:      desired,
 	}, nil
+}
+
+// scopedSchemaCopy returns a schema suitable for comparing the contents of a
+// schema-scoped connection. Its name and object back-references are cleared so
+// changes from differently named schemas can be planned as one scope without
+// mutating the realms retained for output formatting.
+func scopedSchemaCopy(s *schema.Schema) *schema.Schema {
+	scoped := *s
+	scoped.Name = ""
+	tables := make(map[*schema.Table]*schema.Table, len(s.Tables))
+	columns := make(map[*schema.Column]*schema.Column)
+	indexes := make(map[*schema.Index]*schema.Index)
+	foreignKeys := make(map[*schema.ForeignKey]*schema.ForeignKey)
+	views := make(map[*schema.View]*schema.View, len(s.Views))
+	scoped.Tables = make([]*schema.Table, len(s.Tables))
+	for i, table := range s.Tables {
+		tableCopy := *table
+		tableCopy.Schema = &scoped
+		tableCopy.Columns = make([]*schema.Column, len(table.Columns))
+		for i, column := range table.Columns {
+			columnCopy := *column
+			columnCopy.Type = scopedColumnTypeCopy(column.Type, s, &scoped)
+			columnCopy.Indexes = nil
+			columnCopy.ForeignKeys = nil
+			columns[column] = &columnCopy
+			tableCopy.Columns[i] = &columnCopy
+		}
+		tables[table] = &tableCopy
+		scoped.Tables[i] = &tableCopy
+	}
+	scoped.Views = make([]*schema.View, len(s.Views))
+	for i, view := range s.Views {
+		viewCopy := *view
+		viewCopy.Schema = &scoped
+		views[view] = &viewCopy
+		scoped.Views[i] = &viewCopy
+	}
+	for _, table := range s.Tables {
+		tableCopy := tables[table]
+		tableCopy.Indexes = make([]*schema.Index, len(table.Indexes))
+		for i, index := range table.Indexes {
+			tableCopy.Indexes[i] = scopedIndexCopy(index, indexes, columns)
+		}
+		tableCopy.PrimaryKey = scopedIndexCopy(table.PrimaryKey, indexes, columns)
+		tableCopy.ForeignKeys = make([]*schema.ForeignKey, len(table.ForeignKeys))
+		for i, foreignKey := range table.ForeignKeys {
+			tableCopy.ForeignKeys[i] = scopedForeignKeyCopy(foreignKey, foreignKeys, columns)
+		}
+		tableCopy.Deps = scopedObjectCopies(table.Deps, tables, views, indexes, foreignKeys)
+		tableCopy.Refs = scopedObjectCopies(table.Refs, tables, views, indexes, foreignKeys)
+	}
+	for original, indexCopy := range indexes {
+		indexCopy.Table = scopedTableRef(original.Table, tables)
+	}
+	for original, foreignKeyCopy := range foreignKeys {
+		foreignKeyCopy.Table = scopedTableRef(original.Table, tables)
+		foreignKeyCopy.RefTable = scopedTableRef(original.RefTable, tables)
+	}
+	for original, columnCopy := range columns {
+		columnCopy.Indexes = make([]*schema.Index, len(original.Indexes))
+		for i, index := range original.Indexes {
+			columnCopy.Indexes[i] = scopedObjectRef(index, indexes)
+		}
+		columnCopy.ForeignKeys = make([]*schema.ForeignKey, len(original.ForeignKeys))
+		for i, foreignKey := range original.ForeignKeys {
+			columnCopy.ForeignKeys[i] = scopedObjectRef(foreignKey, foreignKeys)
+		}
+	}
+	for _, view := range s.Views {
+		views[view].Deps = scopedObjectCopies(view.Deps, tables, views, indexes, foreignKeys)
+	}
+	return &scoped
+}
+
+func scopedColumnTypeCopy(columnType *schema.ColumnType, original, scoped *schema.Schema) *schema.ColumnType {
+	if columnType == nil {
+		return nil
+	}
+	copy := *columnType
+	if enum, ok := columnType.Type.(*schema.EnumType); ok && enum.Schema == original {
+		enumCopy := *enum
+		enumCopy.Schema = scoped
+		copy.Type = &enumCopy
+	}
+	return &copy
+}
+
+func scopedTableRef(table *schema.Table, tables map[*schema.Table]*schema.Table) *schema.Table {
+	if tableCopy, ok := tables[table]; ok {
+		return tableCopy
+	}
+	return table
+}
+
+func scopedIndexCopy(index *schema.Index, indexes map[*schema.Index]*schema.Index, columns map[*schema.Column]*schema.Column) *schema.Index {
+	if index == nil {
+		return nil
+	}
+	if indexCopy, ok := indexes[index]; ok {
+		return indexCopy
+	}
+	indexCopy := *index
+	indexCopy.Table = nil
+	indexCopy.Parts = make([]*schema.IndexPart, len(index.Parts))
+	for i, part := range index.Parts {
+		partCopy := *part
+		partCopy.C = scopedColumnRef(part.C, columns)
+		indexCopy.Parts[i] = &partCopy
+	}
+	indexes[index] = &indexCopy
+	return &indexCopy
+}
+
+func scopedForeignKeyCopy(foreignKey *schema.ForeignKey, foreignKeys map[*schema.ForeignKey]*schema.ForeignKey, columns map[*schema.Column]*schema.Column) *schema.ForeignKey {
+	if foreignKey == nil {
+		return nil
+	}
+	if foreignKeyCopy, ok := foreignKeys[foreignKey]; ok {
+		return foreignKeyCopy
+	}
+	foreignKeyCopy := *foreignKey
+	foreignKeyCopy.Table = nil
+	foreignKeyCopy.RefTable = nil
+	foreignKeyCopy.Columns = make([]*schema.Column, len(foreignKey.Columns))
+	for i, column := range foreignKey.Columns {
+		foreignKeyCopy.Columns[i] = scopedColumnRef(column, columns)
+	}
+	foreignKeyCopy.RefColumns = make([]*schema.Column, len(foreignKey.RefColumns))
+	for i, column := range foreignKey.RefColumns {
+		foreignKeyCopy.RefColumns[i] = scopedColumnRef(column, columns)
+	}
+	foreignKeys[foreignKey] = &foreignKeyCopy
+	return &foreignKeyCopy
+}
+
+func scopedColumnRef(column *schema.Column, columns map[*schema.Column]*schema.Column) *schema.Column {
+	if columnCopy, ok := columns[column]; ok {
+		return columnCopy
+	}
+	return column
+}
+
+func scopedObjectCopies(objects []schema.Object, tables map[*schema.Table]*schema.Table, views map[*schema.View]*schema.View, indexes map[*schema.Index]*schema.Index, foreignKeys map[*schema.ForeignKey]*schema.ForeignKey) []schema.Object {
+	if len(objects) == 0 {
+		return nil
+	}
+	copies := make([]schema.Object, len(objects))
+	for i, object := range objects {
+		switch object := object.(type) {
+		case *schema.Table:
+			copies[i] = scopedObjectRef(object, tables)
+		case *schema.View:
+			copies[i] = scopedObjectRef(object, views)
+		case *schema.Index:
+			copies[i] = scopedObjectRef(object, indexes)
+		case *schema.ForeignKey:
+			copies[i] = scopedObjectRef(object, foreignKeys)
+		default:
+			copies[i] = object
+		}
+	}
+	return copies
+}
+
+func scopedObjectRef[T interface {
+	schema.Object
+	comparable
+}](object T, copies map[T]T) T {
+	if objectCopy, ok := copies[object]; ok {
+		return objectCopy
+	}
+	return object
+}
+
+func restoreScopedSchemaChangeNames(changes []schema.Change, target *schema.Schema) {
+	for _, change := range changes {
+		if change, ok := change.(*schema.ModifySchema); ok {
+			change.S = target
+		}
+	}
 }
 
 const (

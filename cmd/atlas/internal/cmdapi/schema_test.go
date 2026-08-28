@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"ariga.io/atlas/cmd/atlas/internal/cmdext"
 	"ariga.io/atlas/cmd/atlas/internal/cmdlog"
 	"ariga.io/atlas/sql/migrate"
 	"ariga.io/atlas/sql/schema"
@@ -571,9 +572,9 @@ func TestFanoutRiskClasses(t *testing.T) {
 
 func TestFanoutArtifactHashBindsNonFileSources(t *testing.T) {
 	r := schema.NewRealm(schema.New("main"))
-	a, err := desiredArtifactHash([]string{"mysql://localhost/a"}, r)
+	a, err := desiredArtifactHash([]string{"mysql://localhost/a"}, r, "")
 	require.NoError(t, err)
-	b, err := desiredArtifactHash([]string{"mysql://localhost/b"}, r)
+	b, err := desiredArtifactHash([]string{"mysql://localhost/b"}, r, "")
 	require.NoError(t, err)
 	require.NotEqual(t, a, b)
 }
@@ -585,6 +586,25 @@ func TestFanoutFingerprintDrift(t *testing.T) {
 	changed := schema.NewRealm(schema.New("main").AddTables(&schema.Table{Name: "external_writer"}))
 	require.Equal(t, "target changed after planning", fingerprintDrift(p, changed, nil, ""))
 	require.Equal(t, "desired artifact changed after planning", fingerprintDrift(p, planned, changed, "artifact"))
+}
+
+func TestFanoutFingerprintDriftScopedSchema(t *testing.T) {
+	planned := schema.NewRealm(schema.New("main"))
+	p := &fanoutPlan{CurrentHash: scopedRealmHash(planned, "tenant"), DesiredHash: scopedRealmHash(planned, "tenant"), ArtifactHash: "artifact", targetSchema: "tenant"}
+	current := schema.NewRealm(schema.New("tenant"))
+	require.Empty(t, fingerprintDrift(p, current, current, "artifact"))
+	changed := schema.NewRealm(schema.New("tenant").AddTables(&schema.Table{Name: "external_writer"}))
+	require.Equal(t, "target changed after planning", fingerprintDrift(p, changed, nil, ""))
+}
+
+func TestFanoutArtifactHashScopedSchema(t *testing.T) {
+	planned := schema.NewRealm(schema.New("main"))
+	observed := schema.NewRealm(schema.New("tenant"))
+	a, err := desiredArtifactHash([]string{"mysql://localhost/source"}, planned, "tenant")
+	require.NoError(t, err)
+	b, err := desiredArtifactHash([]string{"mysql://localhost/source"}, observed, "tenant")
+	require.NoError(t, err)
+	require.Equal(t, a, b)
 }
 
 func TestSchema_ApplyFanoutPartialFailure(t *testing.T) {
@@ -730,6 +750,47 @@ func TestSchema_ApplyLog(t *testing.T) {
 		require.Equal(t, out.Pending[0], out.Error.Stmt)
 		require.Contains(t, out.Error.Text, `UNIQUE constraint failed: t2.id`)
 	})
+}
+
+func TestComputeDiffScopedPreservesRealmNames(t *testing.T) {
+	client, err := sqlclient.Open(context.Background(), openSQLite(t, ""))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	fromSchema := schema.New("tenant_a")
+	toSchema := schema.New("tenant_b")
+	toSchema.AddTables(
+		schema.NewTable("users").AddColumns(
+			schema.NewColumn("status").SetType(&schema.EnumType{T: "status", Schema: toSchema}),
+		),
+	)
+	from, to := &schema.Realm{Schemas: []*schema.Schema{fromSchema}}, &schema.Realm{Schemas: []*schema.Schema{toSchema}}
+	d, err := computeDiff(
+		context.Background(), client,
+		&cmdext.StateReadCloser{StateReader: migrate.Realm(from), Schema: "tenant_a"},
+		&cmdext.StateReadCloser{StateReader: migrate.Realm(to), Schema: "tenant_b"},
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, d.changes)
+	require.Equal(t, "tenant_a", d.from.Schemas[0].Name)
+	require.Equal(t, "tenant_b", d.to.Schemas[0].Name)
+	var foundAddTable bool
+	for _, change := range d.changes {
+		if change, ok := change.(*schema.AddTable); ok {
+			foundAddTable = true
+			require.Empty(t, change.T.Schema.Name)
+			enum, ok := change.T.Columns[0].Type.Type.(*schema.EnumType)
+			require.True(t, ok)
+			require.Empty(t, enum.Schema.Name)
+		}
+	}
+	require.True(t, foundAddTable)
+}
+
+func TestRestoreScopedSchemaChangeNames(t *testing.T) {
+	target := schema.New("tenant")
+	change := &schema.ModifySchema{S: schema.New("")}
+	restoreScopedSchemaChangeNames([]schema.Change{change}, target)
+	require.Same(t, target, change.S)
 }
 
 func TestSchema_ApplySchemaMismatch(t *testing.T) {
