@@ -413,7 +413,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       cockroach:
-        image: ghcr.io/ariga/cockroachdb-single-node:v22.1.0
+        image: cockroachdb/cockroach:v24.3.36
+        env:
+          COCKROACH_ARGS: start-single-node --insecure
         ports:
           - 26257:26257
     steps:
@@ -424,3 +426,5 @@ jobs:
       - name: Run integration tests for cockroach
         working-directory: internal/integration
         run: go test -race -count=2 -v -run="Cockroach" -version="cockroach" -timeout 15m ./...
+        env:
+          COCKROACH_ARGS: start-single-node --insecure
