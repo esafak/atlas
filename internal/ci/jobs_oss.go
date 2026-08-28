@@ -9,7 +9,7 @@ package main
 //go:generate go run . -flavor Community -suffix oss
 
 func init() {
-	data.GoVersions = goVersions{"1.22"}
+	data.GoVersions = goVersions{"1.26.4"}
 	data.GlobalEnv = []struct{ K, V string }{
 		{K: "ATLAS_NO_UPGRADE_SUGGESTIONS", V: "1"},
 	}
