@@ -1,0 +1,16 @@
+cmd/atlas/internal/cmdapi/schema_fanout.go
+  h_ea91e2db23540f 80,477,487,497,579,582,588-601,652,660,751,756-758
+cmd/atlas/internal/cmdapi/schema_test.go
+  h_ea91e2db23540f 574,576,590-608
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "dcec4e1dc20f270b9e36a352220e15c5cc65311a",
+  "prompts": {},
+  "humans": {
+    "h_ea91e2db23540f": {
+      "author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}
