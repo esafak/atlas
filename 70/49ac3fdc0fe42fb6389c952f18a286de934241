@@ -1,0 +1,49 @@
+.github/workflows/cd-docker-push-cockroach_oss.yaml
+  s_6fb3c369fb12ba::t_cb5f8a97ab394c 14-15
+.github/workflows/cd-docker-push-mysql_oss.yaml
+  s_6fb3c369fb12ba::t_6c65368b9e0357 44
+.github/workflows/ci-devcontainer-features.yaml
+  s_6fb3c369fb12ba::t_5e885414e9e30c 26,43
+.github/workflows/ci-dialect_oss.yaml
+  s_82f5446fcf4654::t_8540108585b87b 30-31,57-58,84-85,111-112,138-139,165-166,191-192,217-218,243-244,269-270,295-296,321-322,347-348,360-361,375-376,390-391,405-406,416,420-421
+.github/workflows/ci-go_oss.yaml
+  s_82f5446fcf4654::t_d25e560a5f26c2 25-26,37-38,62-63,76-77,87-88
+.github/workflows/ci-revisions_oss.yaml
+  s_82f5446fcf4654::t_38a2bab41b8d65 21,24,36
+.github/workflows/ci-sdk.yml
+  s_6fb3c369fb12ba::t_c205a989197448 14-15,30-31,65-66
+.github/workflows/release-devcontainer-features.yaml
+  s_6fb3c369fb12ba::t_89919c7ab6d108 17
+internal/ci/ci_dialect.tmpl
+  s_6fb3c369fb12ba::t_03dc1a513bc4c9 49-50
+internal/ci/ci_go.tmpl
+  s_6fb3c369fb12ba::t_12fbd2b87b5278 27-28,50-51,86-87,111-112,133-134
+internal/ci/ci_revisions.tmpl
+  s_6fb3c369fb12ba::t_8f45461c23fbba 19,22,45
+internal/ci/jobs_oss.go
+  s_6fb3c369fb12ba::t_af90b812f1cf54 37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "7049ac3fdc0fe42fb6389c952f18a286de934241",
+  "prompts": {},
+  "sessions": {
+    "s_6fb3c369fb12ba": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fbacb1c4fffeaJ6YwTVX9SIoJp",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    },
+    "s_82f5446fcf4654": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fbae0a069ffepH3bUEr3rQDd5S",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}

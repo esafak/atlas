@@ -1,0 +1,19 @@
+.github/workflows/ci-dialect_oss.yaml
+  s_82f5446fcf4654::t_09878c119affbc 419-429
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "86e82f347291f9abcec909f7099f160815b924fe",
+  "prompts": {},
+  "sessions": {
+    "s_82f5446fcf4654": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fbae0a069ffepH3bUEr3rQDd5S",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}
