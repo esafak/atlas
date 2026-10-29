@@ -915,6 +915,21 @@ func schemaApplyRunE(cmd *cobra.Command, _ []string, flags *schemaApplyFlags) er
 	return schemaApplyRunEWithFanout(cmd, nil, flags, &fanoutFlags{})
 }
 
+
+// fanoutRequested reports whether the caller asked for any fan-out-only
+// behaviour. A single-target cohort is still a cohort: refusing here would make
+// evidence, reports, and risk overrides unavailable to the first tenant of every
+// fleet, which is the release that most needs them.
+func fanoutRequested(fanout *fanoutFlags) bool {
+	if fanout == nil {
+		return false
+	}
+	return len(fanout.allowRisk) > 0 ||
+		fanout.report != "" ||
+		fanout.retryReport != "" ||
+		fanout.evidenceDir != ""
+}
+
 func schemaApplyRunEWithFanout(cmd *cobra.Command, _ []string, flags *schemaApplyFlags, fanout *fanoutFlags) error {
 	switch {
 	case flags.edit:
@@ -940,14 +955,8 @@ func schemaApplyRunEWithFanout(cmd *cobra.Command, _ []string, flags *schemaAppl
 		if len(envs) == 0 {
 			return fmt.Errorf("environment %q expanded to no targets", GlobalFlags.SelectedEnv)
 		}
-		if len(envs) > 1 {
+		if len(envs) > 1 || fanoutRequested(fanout) {
 			return fanoutRun(cmd, *flags, envs, *fanout)
-		}
-		if fanout != nil && (len(fanout.allowRisk) > 0 || fanout.report != "" || fanout.retryReport != "") {
-			return errors.New("fan-out-only flags require an environment that expands to multiple targets")
-		}
-		if fanout != nil && fanout.evidenceDir != "" {
-			return errors.New("evidence publication requires an environment that expands to multiple targets")
 		}
 		if err := setSchemaEnvFlags(cmd, envs[0]); err != nil {
 			return err
