@@ -1,0 +1,21 @@
+cmd/atlas/internal/cmdapi/cmdapi.go
+  s_8def97a94f2db0::t_0c91b0d664a503 918-932,958
+cmd/atlas/internal/cmdapi/schema_fanout.go
+  s_8def97a94f2db0::t_051ae80f30ced1 230-231
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f64a0d6c09fbb0c0afc8c0824336c290907c99a7",
+  "prompts": {},
+  "sessions": {
+    "s_8def97a94f2db0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e7b454964ffeoe1UJONoondIEE",
+        "model": "unknown"
+      },
+      "human_author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}
