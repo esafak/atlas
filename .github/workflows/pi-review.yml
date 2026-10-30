@@ -114,21 +114,6 @@ jobs:
           persist-credentials: false
           ref: ${{ needs.authorize.outputs.head-sha }}
 
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: |
-            go.sum
-            cmd/atlas/go.sum
-            internal/integration/go.sum
-
-      - name: Preinstall Go dependencies for code execution
-        run: |
-          go mod download
-          (cd cmd/atlas && go mod download)
-          (cd internal/integration && go mod download)
-
       - name: Buffer conversation replies
         if: ${{ github.event_name == 'pull_request_review_comment' }}
         run: sleep 5
@@ -197,6 +182,7 @@ jobs:
           # Keep debug traces off by default; this repository is public.
           debug: 'false'
           github-scope: token-accessible
-          code-exec: true
+          # The sandbox does not expose Go's downloaded module cache.
+          code-exec: false
           ai-search-provider: ${{ vars.PI_REVIEWER_AI_SEARCH_PROVIDER }}
           search-provider: ${{ vars.PI_REVIEWER_WEB_SEARCH_PROVIDER }}
