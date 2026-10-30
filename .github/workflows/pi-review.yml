@@ -187,4 +187,4 @@ jobs:
           ai-search-provider: ${{ vars.PI_REVIEWER_AI_SEARCH_PROVIDER }}
           search-provider: ${{ vars.PI_REVIEWER_WEB_SEARCH_PROVIDER }}
           extra-instructions: |
-            Before making factual claims about GitHub Actions syntax or external tool/provider capabilities, verify against current official documentation and cite the source URL. If web search is unavailable, state the uncertainty instead of asserting from memory. An actionlint rejection alone is not proof that GitHub rejects the syntax.
+            Before making factual claims about GitHub Actions syntax or external tool/provider capabilities, verify against current official documentation and cite the source URL. If web search is unavailable, errors, or exhausts its budget, state the uncertainty instead of asserting from memory. An actionlint rejection alone is not proof that GitHub rejects the syntax.
