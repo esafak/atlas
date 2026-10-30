@@ -1,0 +1,19 @@
+cmd/atlas/internal/cmdapi/schema_test.go
+  s_3a2b54cd4dc95e::t_4c4a492194306c 507,510-523,526
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b69c0020743ef0454c809b9ee321728ca8544834",
+  "prompts": {},
+  "sessions": {
+    "s_3a2b54cd4dc95e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e751790caffezz8fGYazmqqdoc",
+        "model": "unknown"
+      },
+      "human_author": "Emre Şafak <3928300+esafak@users.noreply.github.com>"
+    }
+  }
+}
