@@ -504,13 +504,26 @@ env "tenants" {
 }`), 0600))
 	one := base + "-1.db"
 	two := base + "-2.db"
-	report := filepath.Join(p, "report.json")
+	singleReport := filepath.Join(p, "single-report.json")
 	cmd := schemaCmd()
 	cmd.AddCommand(schemaApplyCmd())
-	s, err := runCmd(cmd, "apply", "--config", "file://"+cfg, "--env", "tenants", "--var", "urls="+one, "--var", "urls="+two, "--dry-run", "--report", report)
+	s, err := runCmd(cmd, "apply", "--config", "file://"+cfg, "--env", "tenants", "--var", "urls="+one, "--dry-run", "--report", singleReport)
+	require.NoError(t, err)
+	require.Contains(t, s, "target-")
+	b, err := os.ReadFile(singleReport)
+	require.NoError(t, err)
+	var single fanoutReport
+	require.NoError(t, json.Unmarshal(b, &single))
+	require.Equal(t, "atlas.schema.apply.fanout/v1", single.Version)
+	require.Len(t, single.Plans, 1)
+
+	report := filepath.Join(p, "report.json")
+	cmd = schemaCmd()
+	cmd.AddCommand(schemaApplyCmd())
+	s, err = runCmd(cmd, "apply", "--config", "file://"+cfg, "--env", "tenants", "--var", "urls="+one, "--var", "urls="+two, "--dry-run", "--report", report)
 	require.NoError(t, err)
 	require.Equal(t, 2, strings.Count(s, "target-"))
-	b, err := os.ReadFile(report)
+	b, err = os.ReadFile(report)
 	require.NoError(t, err)
 	var got fanoutReport
 	require.NoError(t, json.Unmarshal(b, &got))

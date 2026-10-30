@@ -927,7 +927,12 @@ func fanoutRequested(fanout *fanoutFlags) bool {
 	return len(fanout.allowRisk) > 0 ||
 		fanout.report != "" ||
 		fanout.retryReport != "" ||
-		fanout.evidenceDir != ""
+		fanout.evidenceDir != "" ||
+		fanout.releaseImageDigest != "" || fanout.contractDigest != "" || fanout.contractVersion != 0 ||
+		fanout.globalArtifactDigest != "" || fanout.tenantArtifactDigest != "" ||
+		fanout.normalizedSchemaIdentity != "" || fanout.currentSchemaIdentity != "" ||
+		fanout.atlasGeneration != 0 || fanout.observedGeneration != 0 || fanout.noTenantFanout ||
+		fanout.contractDescriptor != "" || fanout.newEvidenceRun
 }
 
 func schemaApplyRunEWithFanout(cmd *cobra.Command, _ []string, flags *schemaApplyFlags, fanout *fanoutFlags) error {
