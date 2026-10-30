@@ -1,0 +1,190 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - master
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review_comment:
+    types: [created]
+  issue_comment:
+    types: [created]
+
+# Review every PR update; never abort an in-flight review mid-generation.
+concurrency:
+  group: pi-review-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+  # GitHub permits up to 100 pending runs here; queue: max can't pair with cancel-in-progress: true.
+  queue: max
+
+permissions:
+  contents: read
+
+jobs:
+  authorize:
+    name: Authorize review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      pull-request-number: ${{ steps.authorize.outputs.pull-request-number }}
+      head-sha: ${{ steps.authorize.outputs.head-sha }}
+      comment-authorized: ${{ steps.authorize.outputs.comment-authorized }}
+    steps:
+      - name: Resolve pull request and authorize commenter
+        id: authorize
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const payload = context.payload;
+            const pullRequestNumber = payload.pull_request?.number
+              ?? (payload.issue?.pull_request ? payload.issue.number : undefined);
+
+            let pullRequest;
+            if (pullRequestNumber) {
+              try {
+                ({ data: pullRequest } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pullRequestNumber,
+                }));
+              } catch (error) {
+                if (error.status !== 404) throw error;
+              }
+            }
+
+            core.setOutput('pull-request-number', pullRequest?.number ?? '');
+            core.setOutput('head-sha', pullRequest?.head.sha ?? '');
+
+            const isCommentEvent = [
+              'pull_request_review_comment',
+              'issue_comment',
+            ].includes(context.eventName);
+            let commentAuthorized = 'true';
+            if (isCommentEvent) {
+              commentAuthorized = 'false';
+              const commenterLogin = payload.comment?.user?.login;
+              if (commenterLogin) {
+                try {
+                  const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    username: commenterLogin,
+                  });
+                  commentAuthorized = String(['admin', 'write'].includes(data.permission));
+                } catch {
+                  commentAuthorized = 'false';
+                }
+              }
+            }
+            core.setOutput('comment-authorized', commentAuthorized);
+
+  pi-review:
+    name: AI Code Review
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: reviews
+    permissions:
+      contents: read
+      pull-requests: read
+    if: |
+      !cancelled() &&
+      (github.event_name != 'issue_comment' || github.event.issue.pull_request != null) &&
+      needs.authorize.outputs.pull-request-number != '' &&
+      needs.authorize.outputs.head-sha != '' &&
+      needs.authorize.outputs.comment-authorized == 'true' &&
+      (github.event_name != 'issue_comment' || startsWith(github.event.comment.body, '/pi-')) &&
+      (github.event_name != 'pull_request_review_comment' || github.event.comment.user.type != 'Bot') &&
+      (github.event_name != 'issue_comment' || github.event.comment.user.type != 'Bot') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (github.event_name != 'pull_request' || github.event.pull_request.user.login != 'dependabot[bot]') &&
+      (github.event_name != 'pull_request' || !endsWith(github.event.pull_request.user.login, 'renovate[bot]'))
+    steps:
+      - name: Checkout pull request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.authorize.outputs.head-sha }}
+
+      - name: Buffer conversation replies
+        if: ${{ github.event_name == 'pull_request_review_comment' }}
+        run: sleep 5
+
+      - name: Coalesce conversation replies
+        if: ${{ github.event_name == 'pull_request_review_comment' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PULL_REQUEST_NUMBER: ${{ needs.authorize.outputs.pull-request-number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Let the action recover pending finding replies from the live thread
+          # snapshot; it skips a normal review if this PR head was already reviewed.
+          event_file="$RUNNER_TEMP/pi-review-event.json"
+          gh api "repos/$REPOSITORY/pulls/$PULL_REQUEST_NUMBER" |
+            jq '{action: "synchronize", pull_request: .}' > "$event_file"
+          mv "$event_file" "$GITHUB_EVENT_PATH"
+
+      - name: Get GitHub App token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: bot-token
+        with:
+          client-id: ${{ secrets.PI_REVIEWER_CLIENT_ID }}
+          private-key: ${{ secrets.PI_REVIEWER_PK }}
+          # Required by GitHub's resolveReviewThread mutation.
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: Select provider API key
+        shell: bash
+        env:
+          MODEL_NAME: ${{ vars.MODEL_NAME }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$MODEL_NAME" ]; then
+            echo "::error::Repository variable MODEL_NAME is required"
+            exit 1
+          fi
+          provider="${MODEL_NAME%%/*}"
+          case "$provider" in
+            anthropic) key="$ANTHROPIC_API_KEY" ;;
+            openai) key="$OPENAI_API_KEY" ;;
+            zai) key="$ZAI_API_KEY" ;;
+            *) echo "::error::Unsupported provider in MODEL_NAME: $provider"; exit 1 ;;
+          esac
+          if [ -z "$key" ]; then
+            echo "::error::No API key configured for provider: $provider"
+            exit 1
+          fi
+          echo "::add-mask::$key"
+          printf 'PI_API_KEY=%s\n' "$key" >> "$GITHUB_ENV"
+
+      - name: Pi Reviewer
+        uses: esafak/pi-reviewer@546613d31dd3acdcbb365498b3af6984f8420ddd # esafak/pi-reviewer#177
+        env:
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+        with:
+          pi-api-key: ${{ env.PI_API_KEY }}
+          github-token: ${{ steps.bot-token.outputs.token }}
+          model: ${{ vars.MODEL_NAME }}
+          thinking: ${{ vars.PI_REVIEWER_THINKING || 'high' }}
+          min-severity: warn
+          web-search: true
+          ai-search: true
+          # Keep debug traces off by default; this repository is public.
+          debug: 'false'
+          github-scope: token-accessible
+          # The sandbox does not expose Go's downloaded module cache.
+          code-exec: false
+          ai-search-provider: ${{ vars.PI_REVIEWER_AI_SEARCH_PROVIDER }}
+          search-provider: ${{ vars.PI_REVIEWER_WEB_SEARCH_PROVIDER }}
+          extra-instructions: |
+            Before making factual claims about GitHub Actions syntax or external tool/provider capabilities, verify against current official documentation and cite the source URL. If web search is unavailable, errors, or exhausts its budget, state the uncertainty instead of asserting from memory. An actionlint rejection alone is not proof that GitHub rejects the syntax.
