@@ -172,11 +172,11 @@ jobs:
         uses: esafak/pi-reviewer@546613d31dd3acdcbb365498b3af6984f8420ddd # esafak/pi-reviewer#177
         env:
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+          PI_REVIEWER_THINKING: high
         with:
           pi-api-key: ${{ env.PI_API_KEY }}
           github-token: ${{ steps.bot-token.outputs.token }}
           model: ${{ vars.MODEL_NAME }}
-          thinking: high
           min-severity: warn
           web-search: true
           ai-search: true
