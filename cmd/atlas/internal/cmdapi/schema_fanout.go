@@ -227,8 +227,8 @@ func uniqueStrings(in []string) []string {
 }
 
 func fanoutRun(cmd *cobra.Command, flags schemaApplyFlags, envs []*Env, ff fanoutFlags) error {
-	if len(envs) < 2 {
-		return schemaApplyRun(cmd, flags, envs[0])
+	if len(envs) == 0 {
+		return errors.New("fan-out requires at least one target")
 	}
 	if flags.logFormat != "" {
 		return errors.New("--format/--log are not supported for fan-out; use --report")
