@@ -176,6 +176,7 @@ jobs:
           pi-api-key: ${{ env.PI_API_KEY }}
           github-token: ${{ steps.bot-token.outputs.token }}
           model: ${{ vars.MODEL_NAME }}
+          thinking: high
           min-severity: warn
           web-search: true
           ai-search: true
