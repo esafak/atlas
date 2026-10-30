@@ -89,8 +89,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: reviews
-    env:
-      PI_REVIEWER_THINKING: high
     permissions:
       actions: write
       pull-requests: write
@@ -178,7 +176,7 @@ jobs:
           pi-api-key: ${{ env.PI_API_KEY }}
           github-token: ${{ steps.bot-token.outputs.token }}
           model: ${{ vars.MODEL_NAME }}
-          thinking: ${{ env.PI_REVIEWER_THINKING }}
+          thinking: ${{ vars.PI_REVIEWER_THINKING || 'high' }}
           min-severity: warn
           web-search: true
           ai-search: true
