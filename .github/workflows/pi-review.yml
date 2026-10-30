@@ -15,7 +15,7 @@ on:
 concurrency:
   group: pi-review-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
   cancel-in-progress: false
-  # Match configs: queue pending runs rather than evicting a human-triggered run.
+  # GitHub permits up to 100 pending runs here; queue: max can't pair with cancel-in-progress: true.
   queue: max
 
 permissions:
@@ -187,4 +187,4 @@ jobs:
           ai-search-provider: ${{ vars.PI_REVIEWER_AI_SEARCH_PROVIDER }}
           search-provider: ${{ vars.PI_REVIEWER_WEB_SEARCH_PROVIDER }}
           extra-instructions: |
-            Before reporting GitHub Actions syntax or workflow properties as invalid, verify against current official GitHub documentation. If web search is unavailable, state that uncertainty instead of asserting the claim.
+            Before making factual claims about GitHub Actions syntax or external tool/provider capabilities, verify against current official documentation and cite the source URL. If web search is unavailable, state the uncertainty instead of asserting from memory. An actionlint rejection alone is not proof that GitHub rejects the syntax.
