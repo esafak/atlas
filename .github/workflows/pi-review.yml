@@ -20,8 +20,6 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
 
 jobs:
   authorize:
@@ -90,10 +88,8 @@ jobs:
     timeout-minutes: 30
     environment: reviews
     permissions:
-      actions: write
-      pull-requests: write
       contents: read
-      issues: write
+      pull-requests: read
     if: |
       !cancelled() &&
       (github.event_name != 'issue_comment' || github.event.issue.pull_request != null) &&
@@ -127,6 +123,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Let the action recover pending finding replies from the live thread
+          # snapshot; it skips a normal review if this PR head was already reviewed.
           event_file="$RUNNER_TEMP/pi-review-event.json"
           gh api "repos/$REPOSITORY/pulls/$PULL_REQUEST_NUMBER" |
             jq '{action: "synchronize", pull_request: .}' > "$event_file"
@@ -138,6 +136,7 @@ jobs:
         with:
           client-id: ${{ secrets.PI_REVIEWER_CLIENT_ID }}
           private-key: ${{ secrets.PI_REVIEWER_PK }}
+          # Required by GitHub's resolveReviewThread mutation.
           permission-contents: write
           permission-pull-requests: write
           permission-issues: write
@@ -187,3 +186,5 @@ jobs:
           code-exec: false
           ai-search-provider: ${{ vars.PI_REVIEWER_AI_SEARCH_PROVIDER }}
           search-provider: ${{ vars.PI_REVIEWER_WEB_SEARCH_PROVIDER }}
+          extra-instructions: |
+            Before reporting GitHub Actions syntax or workflow properties as invalid, verify against current official GitHub documentation. If web search is unavailable, state that uncertainty instead of asserting the claim.
